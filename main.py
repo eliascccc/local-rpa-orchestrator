@@ -2,7 +2,7 @@
 # Efter safestop/omstart av RPA/python är det alltid ett nytt kallt startläge.
 # I produktion körs RPA på en windows-laptop utan admin-rättigheter, men dev sker i ubuntu, så koden behöver funka för båda. Python ver 3.14
 # att döda processer är ok, jag kommer spara en lista över OK-processnamn taget när automationen är i full gång, och döda (matchat på namn) alla andra processer för att nollställa hela datorn efter varje jobb. Det är en dedikerat RPA-dator som inte ska ha massa pop-ups osv.
-# normal system_state får endast ändras via write_handover_file(). fatal system_state intern nödstoppstatus i Python
+# normal system_state får endast ändras via write(). fatal system_state intern nödstoppstatus i Python
 # email FÅR svälta schemalagda jobb, alltid prio på email.
 # koden körs på en dedikerad RPA dator utan andra uppgifter. 
 # max ett email per användare med "lifesign-notice" ska skickas per dag
@@ -23,8 +23,9 @@
 # 7. On operator stop of the external RPA, it has a FINALLY-clause to create 'stop.flag'  
 
 
+
 #ctrl + K + 2 för att collapsa alla metoder
-# RPA automation framework with email-triggered job processing.
+# RPA automation framework with email-triggered job processing. 1 job at a time. beginner friendly. external RPA for screen-clicks.
 import tkinter as tk
 import time, random, threading, traceback, os, tempfile, sys, platform, subprocess, signal, atexit, sqlite3, datetime
 from openpyxl import load_workbook #type:ignore
@@ -34,9 +35,9 @@ from typing import Literal
 
 
 job_state = Literal[
-    "RECEIVED",
-    "QUEUED",          # job accepted and waiting for robot
-    "RUNNING",         # robot executing
+    "RECEIVED",        # email is recieved
+    "QUEUED",          # job accepted and waiting for external robot
+    "RUNNING",         # external robot executing
     "VERIFYING",       # verifying result
     "DONE",            # success
     "REJECTED",        # rejected before execution (user issue)
@@ -51,20 +52,556 @@ system_state = Literal[
     "safestop",
 ]
 
-class Emailhander:
-    pass
 
-class FileHandler:
-    def __init__(self, logger) -> None:
-        self.in_dev_mode = True
-        self.logger = logger
+class RecordingService:
+    def __init__(self, append_system_log, ui, in_dev_mode) -> None:
+        self.append_system_log = append_system_log
+        self.ui = ui
+        self.recording_process = None
+
+        self.in_dev_mode = in_dev_mode
+
+
+    def start(self, job_id) -> None:
+        #written by AI
         
 
-    def read_handover_file(self) -> dict:
+        if self.in_dev_mode:
+            recording_process = None #remove in prod
 
-        VALID_JOB_TYPES = ("job1", "job2", "job3", "job4")
-        VALID_SYSTEM_STATES = ("idle", "job_queued", "job_running", "job_verifying", "safestop")
 
+
+        else: #remove in prod
+            os.makedirs("recordings", exist_ok=True)
+            filename = f"recordings/{job_id}.mkv"
+
+            drawtext = (
+                f"drawtext=text='job_id  {job_id}':"
+                "x=200:y=20:"
+                "fontsize=32:"
+                "fontcolor=lightyellow:"
+                "box=1:"
+                "boxcolor=black@0.5"
+            )
+
+            if platform.system() == "Windows":
+                capture = ["-f", "gdigrab", "-i", "desktop"]
+                ffmpeg = "./ffmpeg.exe"
+                recording_process = subprocess.Popen(
+                    [ffmpeg, "-y", *capture, "-framerate", "15", "-vf", drawtext,
+                    "-vcodec", "libx264", "-preset", "ultrafast", filename],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                )
+            else:
+                capture = ["-video_size", "1920x1080", "-f", "x11grab", "-i", ":0.0"]
+                ffmpeg = "ffmpeg"
+                recording_process = subprocess.Popen(
+                    [ffmpeg, "-y", *capture, "-framerate", "15", "-vf", drawtext,
+                    "-vcodec", "libx264", "-preset", "ultrafast", filename],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    start_new_session=True
+                )
+            time.sleep(0.2) #adding dummy time to start the recording
+        
+        self.append_system_log("recording started", job_id) if not self.in_dev_mode else self.append_system_log("DEV-mode: recording NOT STARTED", job_id)
+        self.ui.root.after(0, self.ui.show_recording_overlay)
+        self.recording_process = recording_process  
+  
+
+    def stop(self, job_id=None) -> None:
+        #written by AI
+        try:
+            self.append_system_log(" ", job_id)
+        except Exception: pass
+
+        recording_process = self.recording_process
+        self.recording_process = None
+
+        try:
+            if recording_process is not None:
+                if platform.system() == "Windows":
+                    try:
+                        recording_process.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
+                    except Exception:
+                        recording_process.terminate()
+
+                    try:
+                        recording_process.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        subprocess.run(
+                            ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False,
+                        )
+
+                else:
+                    try:
+                        os.killpg(recording_process.pid, signal.SIGINT)
+                    except Exception:
+                        recording_process.terminate()
+
+                    try:
+                        recording_process.wait(timeout=8)
+                    except subprocess.TimeoutExpired:
+                        subprocess.run(
+                            ["killall", "-q", "-KILL", "ffmpeg"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False,
+                        )
+            else:
+                # fallback if proc-object tappats bort
+                if platform.system() == "Windows":
+                    subprocess.run(
+                        ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                else:
+                    subprocess.run(
+                        ["killall", "-q", "-KILL", "ffmpeg"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+
+        except Exception as err:
+            print("WARN from stop():", err)
+
+        finally:
+            try: self.ui.root.after(0, self.ui.hide_recording_overlay)
+            except Exception: pass
+
+
+    def upload_recording_with_retry(self,local_file="jobid.mkv", remote_path="dummy", max_attempts=3):
+        import shutil
+        
+        for attempt in range(max_attempts):
+            try:
+                # Create parent dir
+                #remote_path.parent.mkdir(parents=True, exist_ok=True)
+                
+                # Copy file
+               # shutil.copy2(local_file, remote_path)
+                
+                print(f"✓ Upload successful: {remote_path}")
+                return True
+            
+            except Exception as e:
+                wait_time = (attempt + 1) ** 2  # 1, 4, 9 seconds
+                print(f"Attempt {attempt+1}/{max_attempts} failed: {e}")
+                print(f"Retrying in {wait_time}s...")
+                time.sleep(wait_time)
+        
+        return False
+
+
+class Job1Handler:
+    pass
+
+
+class EmailJobHandler:
+    def __init__(self, append_system_log, append_ui_log, friends_repo, update_ui_status, generate_job_id, is_within_operating_hours, network_monitor, recording_service, enter_safestop, handover_repo, audit_repo, in_dev_mode) -> None:
+        
+        self.in_dev_mode = in_dev_mode
+        
+        self.append_system_log = append_system_log
+        self.append_ui_log = append_ui_log
+        self.friends_repo = friends_repo
+        self.update_ui_status = update_ui_status
+        self.generate_job_id = generate_job_id
+        self.is_within_operating_hours = is_within_operating_hours
+        self.network_monitor = network_monitor
+        self.recording_service = recording_service
+        self.enter_safestop = enter_safestop
+        self.handover_repo = handover_repo
+        self.audit_repo = audit_repo
+        
+        self.fake_emails =["alice@example.com", "dummy,", "bob@test.com"]
+        #self.fake_emails =[]
+        self.in_dev_mode_use_fake_emails = True
+        self.in_dev_mode_use_fake_emails_once = False #dont change this
+
+       
+    def process_inbox(self) -> bool:
+        job_id=None
+        received_notice_sent = False
+        final_reply_sent = False
+
+        emails = self.fetch_one_email_from_inbox()  #or many?
+        for email_obj in emails:
+            emails.remove(email_obj)
+
+            if self.in_dev_mode_use_fake_emails_once: continue # remove in PROD
+
+            email_address = email_obj # email_obj.sender
+            email_subject = email_obj+"_subjekt" #email_obj.subject
+            email_body = email_obj+"_body" #email_obj.body
+            email_id = email_obj+"_id" #email_obj.id
+
+            #sender, subj, body, email_id = _extract_email_fields()
+
+            self.append_ui_log(f"email from {email_address}")
+            self.append_system_log(f"new email from {email_address}")
+
+            if not self.friends_repo.is_allowed_sender(email_address):
+                self.delete_email(email_id)             #no reply
+                self.append_system_log(f"email from {email_address} deleted (not in friends.xlsx)")
+                self.append_ui_log("--> deleted (not in friends.xlsx)\n") 
+                continue 
+
+
+            #now we are busy
+            sender_notified = False
+            #self.python_is_busy = True
+
+            self.update_ui_status("working")
+            if self.in_dev_mode: time.sleep(2)
+
+            try:
+                job_id = self.generate_job_id()
+                self.audit_repo.update_job_audit(job_id=job_id, job_status="RECEIVED", email_address=email_address, email_subject=email_subject, job_start_date=datetime.datetime.now().strftime("%Y-%m-%d"), job_start_time=datetime.datetime.now().strftime("%H:%M:%S"), insert_db_row=True)
+   
+                if not self.is_within_operating_hours():
+                    self.reply_and_delete(email_id, job_id, message="Fail! email received outside working hours 07-20. Your email was deleted")
+                    sender_notified = True
+                    self.append_ui_log("--> delete & reply 'outside working hours'\n")
+                    self.audit_repo.update_job_audit(job_id=job_id, job_status="REJECTED", error_code="OUTSIDE_WORKING_HOURS", error_explanation="email received outside working hours 07-20")
+                    continue
+            
+                job_type = self.identify_email_job_type(email_id, job_id=job_id)
+
+                if job_type == "unknown":
+                    self.reply_and_delete(email_id, job_id, "Fail! Could not identify a job type from this email. Check spelling of keywords and/or attached files and send again.")
+                    sender_notified = True
+                    self.append_ui_log(f"--> delete & reply 'could not identify job type' \n")
+                    self.audit_repo.update_job_audit(job_id=job_id, job_status="REJECTED", error_code="UNKNOWN_JOB", error_explanation=f"Unable to identify job type")
+                    continue
+                
+                if not self.friends_repo.has_job_access(email_address=email_address, job_type=job_type):
+                    self.reply_and_delete(email_id, job_id, f"FAIL! No access to {job_type}. Check with administrator for access.")
+                    sender_notified = True
+                    self.append_ui_log(f"--> delete & reply 'no access to {job_type} \n")
+                    self.audit_repo.update_job_audit(job_id=job_id, job_status="REJECTED", error_code="NO_ACCESS", error_explanation=f"Sender has no access to {job_type}")
+                    continue
+                
+                if not self.network_monitor.is_allowed_sender():
+                    self.reply_and_delete(email_id, job_id, f"FAIL! No network. Try again later.")
+                    sender_notified = True
+                    self.append_ui_log(f"--> delete & reply 'no network' \n")
+                    self.audit_repo.update_job_audit(job_id=job_id, job_status="REJECTED", error_code="NO_NETWORK", error_explanation=f"No network at the moment")
+                    continue
+
+
+                # --- special cases ---    (no handover)
+
+                if job_type == "ping":
+                    #playsound(ping.wav)
+                    self.reply_and_delete(email_id, job_id, "PONG (robot online).")              
+                    sender_notified = True
+                    self.append_ui_log(f"--> delete & reply 'PONG' \n")
+                    self.audit_repo.update_job_audit(job_id=job_id, job_status="DONE", job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"))
+                    continue 
+                
+                
+                # --- standard pipeline ---   (with handover)
+
+                if job_type == "job1":
+                    is_valid, payload_or_error = self.precheck_job1(email_id)
+                    if not is_valid:
+                        error = payload_or_error
+                        self.reply_and_delete(email_id, job_id, error)
+                        sender_notified = True
+                        self.append_ui_log(f"--> delete & reply 're-check input for {job_type}' \n")
+                        self.audit_repo.update_job_audit(job_id=job_id, job_status="REJECTED", error_code="UNSPECIFIED", error_explanation=error)
+                        del is_valid, error
+                        continue
+                
+                elif job_type == "job2":
+                    is_valid, payload_or_error = self.precheck_job2(email_id)
+                    if not is_valid:
+                        error = payload_or_error
+                        self.reply_and_delete(email_id, job_id, error)
+                        sender_notified = True                 
+                        self.append_ui_log(f"--> delete & reply 're-check input for {job_type}' \n")
+                        self.audit_repo.update_job_audit(job_id=job_id, job_status="REJECTED", error_code="UNSPECIFIED", error_explanation=error)
+                        del error, is_valid
+                        continue
+
+
+                # --- mail accepted, now prepare for handover ---
+
+                self.send_received_notice_if_first_today(email_address=email_address, job_id=job_id)
+                sender_notified = True
+
+                self.move_to_processing_folder(email_id)
+                payload = payload_or_error  # required for standard pipeline
+                
+                try: self.recording_service.start(job_id)
+                except Exception: raise RuntimeError("unable to start videorecording")
+                
+                self.audit_repo.update_job_audit(job_id=job_id, job_status="QUEUED")
+                handover_data = {"system_state": "job_queued", "job_id": job_id, "job_type": job_type, "email_id": email_id, "created_at": time.time(),**payload}
+
+                try:
+                    self.handover_repo.write_file(handover_data)
+                except Exception as err:
+                    self.reply_and_delete(email_id, job_id, "FAIL! System error, your request is valid but could not start. Robot will stop (out-of-service) and your email was deleted. An automated email was sent to robot admin.")
+                    sender_notified = True
+                    self.append_ui_log(f"--> delete & reply 'system error' \n")
+                    self.audit_repo.update_job_audit(job_id=job_id, job_status="FAILED", error_code="SYSTEM_ERROR", error_explanation=err)
+                    self.enter_safestop(reason=err, job_id=job_id)
+                    
+                del handover_data, payload, payload_or_error
+                
+                if not sender_notified: raise ValueError("!!!!!!!!!!!!!!!!!!!!!!!!! add code to notify user")
+                
+                self.append_system_log(f"return True (RPA handover needed)", job_id)
+                return True
+            
+            except Exception as err:
+                try:
+                    if not sender_notified:
+                        self.reply_and_delete(email_id, job_id, "Unknown system error, the robot will do a full stop (out-of-service) and your email was deleted.")
+                        sender_notified = True
+                        self.append_ui_log(f"--> delete & reply 'unknown system error' \n")
+                        self.audit_repo.update_job_audit(job_id=job_id, job_status="FAILED", error_code="SYSTEM_ERROR", error_explanation=err)
+                except Exception: pass
+
+                raise #notify sender when error and re-raise error
+                    
+        
+        
+        if self.in_dev_mode: self.in_dev_mode_use_fake_emails_once = True #remove in prod
+        #self.append_system_log(f"return False (no unhandled emails in inbox)")
+        return False
+
+
+    def fetch_one_email_from_inbox(self):
+        if self.in_dev_mode:
+            return self.fake_emails
+        else:
+            return []
+
+
+    def move_to_processing_folder(self,email):
+        #move from inbox to "processing"
+        pass
+
+
+    def send_received_notice_if_first_today(self, job_id, email_address) -> None:
+        
+
+        jobs_today = self.audit_repo.count_todays_jobs_by_sender(job_id, email_address)
+
+        if jobs_today != 0:
+            return
+          
+         #under const.
+        
+        #rubrik RECEIVED re:
+        ## This is an automated reply:
+        # The robot is online(green) and your email is received.
+        # Only one "RECEIVED"-email is sent per day to prevent spamming.
+        #  A new email with the result (DONE/FAIL) will be sent when job is completed.
+        pass
+    
+
+    def delete_email(self, email_id):
+         #under construction
+         pass
+     
+
+    def reply_and_delete(self, email_id, job_id, message):
+        #under construction
+        return
+
+        #update also sqlite?
+
+        self.append_system_log(f"arg: message='{message[:50]+'...' if len(message)>50 else message}'", job_id)
+        
+            # some "remove email" -action
+
+
+    def identify_email_job_type(self,email_id, job_id) -> str:
+        #add logic to identify job type
+        job_type = "ping"
+        job_type = "unknown"
+        job_type = "job1"
+        
+        self.append_system_log(f"job_type is {job_type}", job_id)
+
+        return(job_type)
+
+
+    def precheck_job1(self, email_id) -> tuple[bool, dict]:
+
+        payload_or_error = {"sku": 111, "old_material": 222}
+        return True, payload_or_error
+
+
+    def precheck_job2(self, email_id):
+        return False,{}
+    
+
+class ScheduledJobHandler:
+    def __init__(self, append_system_log, append_ui_log, update_ui_status, generate_job_id, is_within_operating_hours, network_monitor, recording_service, enter_safestop, handover_repo, audit_repo, in_dev_mode) -> None:
+        self.append_system_log = append_system_log
+        self.append_ui_log = append_ui_log
+        self.update_ui_status = update_ui_status
+        self.generate_job_id = generate_job_id
+        self.is_within_operating_hours = is_within_operating_hours
+        self.network_monitor = network_monitor
+        self.recording_service = recording_service
+        self.enter_safestop = enter_safestop
+        self.handover_repo = handover_repo
+        self.audit_repo = audit_repo
+        self.count_todays_jobs_by_sender = audit_repo.count_todays_jobs_by_sender
+        self.next_job3_check_time = 0
+        self.next_job4_check_time = 0
+
+        self.in_dev_mode = in_dev_mode
+
+
+    def process_scheduled_jobs(self) -> bool:
+
+        
+        if not self.network_monitor.is_allowed_sender():
+            return False
+        
+        now = time.time()
+        
+        #dispach
+        if now > self.next_job3_check_time:
+            found = self.process_scheduled_job3()
+            if found:
+                return True #yes handover needed        
+            self.next_job3_check_time = now + 3600 #1h
+            if self.in_dev_mode: self.next_job3_check_time = now + 10
+        
+        if now > self.next_job4_check_time:
+            found = self.process_scheduled_job4()
+            if found:
+                return True #yes handover needed
+            self.next_job4_check_time = now + 3600 #1h
+            if self.in_dev_mode: self.next_job4_check_time = now + 10
+
+        #self.append_system_log(f"return False (no scheduled jobs found)")
+        return False #no handover needed
+    
+
+    def unused_simulate_a_new_job3(self):
+        with open("job3.flag", "w", encoding="utf-8") as f:
+            f.write("simuation of workflow: job1")
+
+
+    def process_scheduled_job3(self) -> bool:
+        self.append_system_log(f"check")
+        
+        if self.in_dev_mode:
+            return False
+        
+        if random.randint(0, 1) == 1: #simulation
+            return False #no jobs found
+
+        
+        #now we busy
+        self.update_ui_status(status="working")
+        
+        job_id = self.generate_job_id()
+        job_type="job3"
+        self.append_system_log("new job found, job_id created", job_id)
+        self.append_ui_log("job found!")
+        self.audit_repo.update_job_audit(job_id=job_id, job_status="QUEUED", job_type=job_type, job_start_date=datetime.datetime.now().strftime("%Y-%m-%d"), job_start_time=datetime.datetime.now().strftime("%H:%M:%S"), insert_db_row=True)
+
+
+        handover_data = {"system_state": "job_queued", "job_id":job_id, "job_type": job_type}
+        self.handover_repo.write_file(handover_data)
+        return True
+        
+
+    def process_scheduled_job4(self) -> bool:
+        #placeholder for job4 logic
+        self.append_system_log("check job4")
+        return False
+
+
+class JobVerifier:
+    """this class handels verifaication of both email jobs and scheduled jobs"""
+    def __init__(self, append_system_log, ui, audit_repo, email_job_handler, recording_service, handover_repo) -> None:
+        self.append_system_log=append_system_log
+        self.ui=ui
+        self.audit_repo=audit_repo
+        self.email_job_handler = email_job_handler
+        self.recording_service = recording_service
+        self.handover_repo = handover_repo
+
+    
+    def process_verification(self, handover_data):
+        #a dubbel-check that the intended entered handover_data in ERP via RPA is indeed entered according to a query 
+        job_id = handover_data.get("job_id")
+        job_type = handover_data.get("job_type")
+
+        self.append_system_log(f"fetched: {handover_data}", job_id)
+        self.audit_repo.update_job_audit(job_id=job_id, job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"), job_status="VERIFYING") 
+
+
+
+        if job_type == "job1":
+            self.verify_job1()
+            
+        elif job_type == "job2":
+            self.verify_job2()
+
+        elif job_type == "job3":
+            #add logic
+            pass
+
+        elif job_type == "job4":
+            #add logic
+            pass
+
+
+        time.sleep(3) #simulate job_verifying
+        self.audit_repo.update_job_audit(job_id=job_id, job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"), job_status="DONE") 
+        self.append_system_log("success", job_id)
+        self.complete_verification(job_id)
+
+
+    def verify_job1(self):
+        """Query ERP to confirm job1 was entered correctly"""
+        pass
+
+
+    def verify_job2(self):
+        pass
+
+
+    def complete_verification(self, job_id) -> None:
+        self.recording_service.stop(job_id)
+
+        count = self.audit_repo.count_completed_jobs_today()
+        self.ui.root.after(0, lambda: self.ui.set_jobs_done_today(count))
+
+        self.handover_repo.write({"system_state": "idle"})
+        self.append_system_log("state: job_verifying -> idle", job_id)
+        time.sleep(0.1) # to allow update_status_display: online
+  
+
+class HandoverRepository:
+   
+    def __init__(self, append_system_log) -> None:
+        self.append_system_log = append_system_log
+        self.VALID_JOB_TYPES = ("job1", "job2", "job3", "job4")
+        self.VALID_SYSTEM_STATES = ("idle", "job_queued", "job_running", "job_verifying", "safestop")
+
+   
+    def read_file(self) -> dict:
         last_err=None
 
         for attempt in range(7):
@@ -79,11 +616,11 @@ class FileHandler:
                         handover_data[key.strip()] = value.strip()
 
                 system_state = handover_data.get("system_state")               # validate state
-                if system_state not in VALID_SYSTEM_STATES:
+                if system_state not in self.VALID_SYSTEM_STATES:
                     raise ValueError(f"Unknown state: {system_state}")
                 
                 job_type = handover_data.get("job_type")    #validate job_type
-                if system_state =="job_verifying" and job_type not in VALID_JOB_TYPES:
+                if system_state =="job_verifying" and job_type not in self.VALID_JOB_TYPES:
                     raise ValueError(f"Unknown job_type for system_state job_verifying: {job_type}")
 
                 return handover_data
@@ -91,14 +628,18 @@ class FileHandler:
             except Exception as err:
                 last_err = err
                 print(f"WARN: retry {attempt+1}/7 : {err}")
-                if not self.in_dev_mode: time.sleep((attempt+1) ** 2) #fail fast in dev
+                time.sleep((attempt+1) ** 2)
 
 
         raise RuntimeError(f"handover.txt unreadable: {last_err}")
     
       
-    def write_handover_file(self, handover_data: dict) -> None:
-        """ atomic write """
+    def write_file(self, handover_data: dict) -> None:
+        """ atomic write of handover.txt"""
+
+        system_state = handover_data.get("system_state")               # validate state
+        if system_state not in self.VALID_SYSTEM_STATES:
+            raise ValueError(f"Unknown state: {system_state}")
 
         for attempt in range(7):
             temp_path = None
@@ -115,36 +656,35 @@ class FileHandler:
                     os.fsync(tmp.fileno())
 
                 os.replace(temp_path, "handover.txt") # replace original file
-                try: self.logger(f"written: {handover_data}", job_id=handover_data.get("job_id"))
+                try: self.append_system_log(f"written: {handover_data}", job_id=handover_data.get("job_id"))
                 except Exception: pass
                 return
 
             except Exception as err:
                 last_err = err
-                print(f"{attempt+1}st warning from write_handover_file()")
-                try: self.logger(f"WARN: {attempt+1}/7 error", job_id=handover_data.get("job_id"))
+                print(f"{attempt+1}st warning from write()")
+                try: self.append_system_log(f"WARN: {attempt+1}/7 error", job_id=handover_data.get("job_id"))
                 except Exception: pass
-                if not self.in_dev_mode: time.sleep((attempt + 1) ** 2) # 1 4 9 ... 49sec
+                time.sleep((attempt + 1) ** 2) # 1 4 9 ... 49sec
 
             finally: #remove temp-file if writing fails.
                 if temp_path and os.path.exists(temp_path):
                     try: os.remove(temp_path)
                     except Exception: pass
 
-        try: self.logger(f"CRITICAL: cannot write handover.txt {last_err}", job_id=handover_data.get("job_id"))
+        try: self.append_system_log(f"CRITICAL: cannot write handover.txt {last_err}", job_id=handover_data.get("job_id"))
         except Exception: pass
         raise RuntimeError("CRITICAL: cannot write handover.txt")
   
 
-class FriendsAccess:
-    def __init__(self, logger) -> None:
-        self.logger = logger
-
+class FriendsRepository:
+    def __init__(self, append_system_log) -> None:
+        self.append_system_log = append_system_log
         self.friends_access = {}
         self.friends_file_mtime = None
     
 
-    def read_friends_access_file(self, filepath="friends.xlsx") -> dict:
+    def read_access_file(self, filepath="friends.xlsx") -> dict:
         #code written by AI
         """
         Reads friends.xlsx and returns eg.:
@@ -217,7 +757,7 @@ class FriendsAccess:
         if (not force_reload) and (self.friends_file_mtime == current_mtime):
             return False   # ingen ändring
 
-        new_access = self.read_friends_access_file(filepath)
+        new_access = self.read_access_file(filepath)
 
         self.friends_access = new_access
         self.friends_file_mtime = current_mtime
@@ -225,7 +765,7 @@ class FriendsAccess:
         return True
 
 
-    def is_in_friends_access_list(self, email_address: str) -> bool:
+    def is_allowed_sender(self, email_address: str) -> bool:
         email_address = email_address.strip().lower()
         result = email_address in self.friends_access
         return result
@@ -238,15 +778,30 @@ class FriendsAccess:
         return result
 
 
-class Auditlogger:
-    def __init__(self, logger) -> None:
-        self.logger = logger
+class AuditRepository:
+    def __init__(self, append_system_log) -> None:
+        self.append_system_log = append_system_log
+        
+        # Connect
+        self.db = sqlite3.connect("log.db")
+        self.db.row_factory = sqlite3.Row
 
-    def append_audit_log(self, job_id, email_address=None, email_subject=None, job_type=None, job_start_date=None, job_start_time=None, job_finish_time=None, job_status=None, error_code=None,error_explanation=None, insert_db_row=False) -> None:
-        # example use: self.audit_repo.append_audit_log(job_id=20260311124501, job_type="job1")
+    def create_db_if_first_run(self) -> None:
+
+        with sqlite3.connect("log.db") as conn:
+            cur = conn.cursor()
+
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS audit_log
+                         (job_id INTEGER PRIMARY KEY, email_address TEXT, email_subject TEXT, job_type TEXT, job_start_date TEXT, job_start_time TEXT, job_finish_time TEXT, job_status TEXT, error_code TEXT, error_explanation TEXT )
+                        """)
+
+
+    def update_job_audit(self, job_id, email_address=None, email_subject=None, job_type=None, job_start_date=None, job_start_time=None, job_finish_time=None, job_status=None, error_code=None,error_explanation=None, insert_db_row=False) -> None:
+        # example use: self.audit_repo.update_job_audit(job_id=20260311124501, job_type="job1")
 
         if job_status not in ("RECEIVED", "REJECTED", "QUEUED", "RUNNING", "VERIFYING", "DONE", "FAILED", None):
-            raise ValueError(f"append_audit_log(): unknown job_status={job_status}")
+            raise ValueError(f"update_job_audit(): unknown job_status={job_status}")
 
         all_fields = {
             "job_id": job_id,
@@ -262,15 +817,10 @@ class Auditlogger:
         }
 
         fields = {k: v for k, v in all_fields.items() if v is not None}
-        self.logger(f"appending: {fields}", job_id=job_id)
+        self.append_system_log(f"appending: {fields}", job_id=job_id)
 
         with sqlite3.connect("log.db") as conn:
             cur = conn.cursor()
-
-            cur.execute("""
-                CREATE TABLE IF NOT EXISTS audit_log
-                         (job_id INTEGER PRIMARY KEY, email_address TEXT, email_subject TEXT, job_type TEXT, job_start_date TEXT, job_start_time TEXT, job_finish_time TEXT, job_status TEXT, error_code TEXT, error_explanation TEXT )
-                        """)
 
             if insert_db_row:
                 columns = ", ".join(fields.keys())
@@ -295,12 +845,10 @@ class Auditlogger:
                 )
 
                 if cur.rowcount == 0:
-                    raise ValueError(f"append_audit_log(): no row in DB with job_id={job_id}")
+                    raise ValueError(f"update_job_audit(): no row in DB with job_id={job_id}")
     
 
-
-
-    def query_count_jobs_done_today(self) -> int:
+    def count_completed_jobs_today(self) -> int:
         if not os.path.isfile("log.db"):
             return 0
 
@@ -319,9 +867,9 @@ class Auditlogger:
             return result
 
 
-    def count_jobs_done_today_by_user(self, job_id, email_address) -> int:    
+    def count_todays_jobs_by_sender(self, job_id, email_address) -> int:    
         #query for previuos jobs today from sender
-        #self.logger("running")
+        #self.append_system_log("running")
 
         today = datetime.datetime.now().strftime("%Y-%m-%d")
         conn = sqlite3.connect("log.db")
@@ -342,815 +890,7 @@ class Auditlogger:
         return jobs_today
 
 
-class Worker:
-    #Core automation logic with job processing pipeline
-
-    def __init__(self, ui):
-        self.ui = ui
-        self.filehandler = FileHandler(logger=self.logger)  #nu äger worker en Filehandler (som får med append-metod)
-        self.friends_repo = FriendsAccess(logger=self.logger)
-        self.audit_repo = Auditlogger(logger=self.logger)
-
-        self._safestop_entered = False
-
-        #self.last_network_check = 0
-        self.network_state = None   # None = okänt, True = online, False = no network
-        self.next_network_check_time = 0
-        self.next_job3_check_time = 0
-        self.next_job4_check_time = 0
-        self.recording_process = None
-        self.last_created_job_id = None
-        self.python_is_busy = False #hitta annan lösning?
-
-        self.in_dev_mode = True
-        self.fake_emails =["alice@example.com", "dummy,", "bob@test.com"]
-        #self.fake_emails =[]
-        self.in_dev_mode_use_fake_emails = True
-        self.in_dev_mode_use_fake_emails_once = False #dont change this
-        self.in_dev_mode_disable_recording = True
-        self.in_dev_mode_use_fake_scheduledjobs = False
-
-    
-    def startup_sequence(self):
-        if self.in_dev_mode: self.filehandler.write_handover_file({"system_state":"idle"}) # when deployed RPA will do this before running main.py
-
-
-        VERSION = 0.4
-        self.logger(f"WorkerThread started, version={VERSION}")
-
-        # cleanup
-        for fn in ["stop.flag", "reboot.flag", "reboot_ready.flag"]:
-            try: os.remove(fn)
-            except Exception: pass
-
-        atexit.register(self.stop_recording) #extra protection during normal python exit
-        self.stop_recording() #stop any remaing recordings 
-        self.has_network_access()
-
-        try: self.friends_repo.refresh_friends_access(force_reload=True)
-        except Exception as err: self.enter_safestop(reason=err)
-
-        try:
-            count = self.audit_repo.query_count_jobs_done_today()
-            self.ui.root.after(0, lambda: self.ui.set_jobs_done_today(count))
-        except Exception as err: self.enter_safestop(reason=err)
-
-        #self._init_audit_db()
-
-
-    def refresh_ui_status(self) -> None:
-        try:
-            handover_data = self.filehandler.read_handover_file()
-            system_state = handover_data.get("system_state")
-            print("poll handover.txt from refresh_ui...()")
-        except Exception:
-            system_state = None
-
-        if self._safestop_entered or system_state == "safestop":
-            ui_status = "safestop"
-
-        elif self.python_is_busy or system_state in ("job_queued", "job_running", "job_verifying"):
-            ui_status = "working"
-
-        elif self.network_state is False:
-            ui_status = "no network"
-
-        elif not self.is_within_working_hours():
-            ui_status = "ooo"
-
-        else:
-            ui_status = "online"
-
-        self.ui.root.after(0, lambda: self.ui.set_ui_status(ui_status))
-
-
-    def main_loop(self) -> None:
-        self.startup_sequence()
-
-        sleep_s = 1       
-        watchdog_timeout = 600 #10 min
-
-        prev_system_state = None
-        rpa_stalled_since = None
-
-        while True:
-            try:
-                handover_data = self.filehandler.read_handover_file()
-                system_state = handover_data.get("system_state")
-                
-                #dispatch
-                if system_state == "idle":
-                    self.check_for_jobs()  #set system_state=job_queued if RPA proccessing needed
-                    time.sleep(sleep_s)
-
-                elif system_state == "job_queued":  #RPA-poll trigger
-                    time.sleep(sleep_s)
-
-                elif system_state == "job_running":  #RPA set system_state=job_running when job fetched
-                    time.sleep(sleep_s)
-
-                elif system_state == "job_verifying":       #RPA set system_state=job_verifying when job completed
-                    self.handle_verification_stage(handover_data) 
-
-                elif system_state == "safestop":  #only RPA can trigger 'safestop' this way 
-                    self.reply_and_delete_email(email_id=handover_data.get("email_id"), job_id=handover_data.get("job_id"), message="rpa crash")
-                    self.enter_safestop(reason="RPA safestop", job_id=handover_data.get("job_id"))
-                    
-
-                #log all system_state transitions
-                if system_state != prev_system_state:
-                    self.logger(f"state transition detected by CPU-poll: {prev_system_state} -> {system_state}")
-                    print("state is", system_state)
-
-                    #update DB and set hang_timer
-                    if system_state == "job_queued":
-                        rpa_stalled_since = time.time()  #time.time() is float for 'how many seconds have passed this epoch'
-                    elif system_state == "job_running":
-                        rpa_stalled_since = time.time()
-                        self.audit_repo.append_audit_log(job_id=handover_data.get("job_id"), job_status="RUNNING")
-                    else:
-                        rpa_stalled_since = None
-
-                #detect RPA hang (actually: if no system_state transition from RPA )
-                if rpa_stalled_since and system_state in ("job_queued", "job_running") and time.time() - rpa_stalled_since > watchdog_timeout:
-                    self.reply_and_delete_email(email_id=handover_data.get("email_id"), job_id=handover_data.get("job_id"), message="FAILED. This is a timeout error, very bad error, and you _NEED_ to watch video")
-                    rpa_stalled_since = None
-                    self.enter_safestop(reason="RPA timeout - no progress for 10 min", job_id=handover_data.get("job_id"))
-                    
-                
-                prev_system_state = system_state
-                self.python_is_busy = False
-                self.refresh_ui_status()
-                #print(".", end="", flush=True)
-                 
-            except Exception:
-                reason = traceback.format_exc()                
-                self.enter_safestop(reason=reason)             
-
-
-    def append_ui_log(self, text:str) -> None:
-        #wrapper
-        self.ui.root.after(0, lambda: self.ui.append_log_line(text))
-
-
-    def logger(self, event_text: str, job_id=None):
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") #+ "."+str(datetime.datetime.now().microsecond)[:-4]
-        try: caller_name = sys._getframe(1).f_code.co_name
-        except Exception: caller_name ="caller_name error"
-        job_part = f" | JOB {job_id}" if job_id else ""
-        log_line = f"{timestamp} | PY{job_part} | {caller_name}() {event_text}"
-        
-        try:
-            self.append_ui_log(log_line) #system.log is more important
-        except Exception:
-            pass
-        
-        last_err = None
-        for i in range(7):
-            try:
-                with open("system.log", "a", encoding="utf-8") as f:
-                    f.write(log_line + "\n")
-                    f.flush()
-                    os.fsync(f.fileno())
-                return 
-
-            except Exception as err:
-                last_err = err
-                print(f"WARN: retry {i+1}/7 from logger():", err)
-                if not self.in_dev_mode: time.sleep(i+1) #fail fast in dev
-
-        raise RuntimeError(f"logger() failed after 7 attempts: {last_err}")
-
- 
-    def enter_safestop(self, reason, job_id=None) -> Never | None:
-        #critical errors and crashes end up here
-
-        print("WORKER CRASHED:\n", reason)
-
-        
-        if self._safestop_entered: return #re-entrancy protection
-        self._safestop_entered = True 
-
-        try: self.logger(f"CRASH: {reason}", job_id)
-        except Exception: pass
-
-        try: self.notify_admin_by_email(reason)
-        except Exception: pass
-
-        try: self.append_ui_log("Error-email sent to admin. All automations halted")
-        except Exception: pass
-
-        try: self.stop_recording()
-        except Exception: pass
-
-        try: self.ui.root.after(0, lambda: self.ui.set_ui_status("safestop")) 
-        except Exception:
-            print("unable to set ui_status text to 'safestop', shutting down...")
-            try:
-                self.ui.root.after(0, lambda: self.ui.shutdown())
-            except:
-                print("unable to soft-shutdown. Forcing exit")
-                os._exit(1)
-            time.sleep(3)
-            os._exit(1)  #kill if still alive after 3 sec soft-shutdown 
-
-        self.wait_for_reboot_after_safestop(job_id)
-    
-
-    def wait_for_reboot_after_safestop(self, job_id) -> Never:
-        #experimental
-        try: self.logger("running", job_id)
-        except Exception: pass
-
-        while True:
-            time.sleep(1)
-            try:
-                if os.path.isfile("reboot.flag"):
-                    os.remove("reboot.flag")
-                    open("reboot_ready.flag", "w").close()
-                    os._exit(1)
-            except Exception: pass
-
-
-    def notify_admin_by_email(self, reason):
-        # add logic to email admin
-        pass
-
-
-    def check_for_jobs(self) -> None:
-        
-        if self.friends_repo.refresh_friends_access(): self.logger(f"friends.xlsx reloaded")
-
-        
-        #return stops further checks
-        did_RPA_handover = self.handle_emails()
-        if did_RPA_handover:
-            return
-
-        did_RPA_handover = self.handle_scheduled_jobs()
-        if did_RPA_handover:
-            return
-        
-        #placeholder other tasks
-        
-        
-    def handle_emails(self) -> bool:
-        job_id=None
-        received_notice_sent = False
-        final_reply_sent = False
-
-        emails = self.fetch_new_emails()
-        for email_obj in emails:
-            emails.remove(email_obj)
-
-            if self.in_dev_mode_use_fake_emails_once: continue # remove in PROD
-
-            email_address = email_obj # email_obj.sender
-            email_subject = email_obj+"_subjekt" #email_obj.subject
-            email_body = email_obj+"_body" #email_obj.body
-            email_id = email_obj+"_id" #email_obj.id
-
-            #sender, subj, body, email_id = _extract_email_fields()
-
-            self.append_ui_log(f"email from {email_address}")
-            self.logger(f"new email from {email_address}")
-
-            if not self.friends_repo.is_in_friends_access_list(email_address):
-                self.delete_email(email_id)             #no reply
-                self.logger(f"email from {email_address} deleted (not in friends.xlsx)")
-                self.append_ui_log("--> deleted (not in friends.xlsx)\n") 
-                continue 
-
-
-            #now we are busy
-            sender_notified = False
-            self.python_is_busy = True
-
-            self.refresh_ui_status()
-            if self.in_dev_mode: time.sleep(2)
-
-            try:
-                job_id = self.create_job_id()
-                self.audit_repo.append_audit_log(job_id=job_id, job_status="RECEIVED", email_address=email_address, email_subject=email_subject, job_start_date=datetime.datetime.now().strftime("%Y-%m-%d"), job_start_time=datetime.datetime.now().strftime("%H:%M:%S"), insert_db_row=True)
-   
-                if not self.is_within_working_hours():
-                    self.reply_and_delete_email(email_id, job_id, message="Fail! email received outside working hours 07-20. Your email was deleted")
-                    sender_notified = True
-                    self.append_ui_log("--> delete & reply 'outside working hours'\n")
-                    self.audit_repo.append_audit_log(job_id=job_id, job_status="REJECTED", error_code="OUTSIDE_WORKING_HOURS", error_explanation="email received outside working hours 07-20")
-                    continue
-            
-                job_type = self.identify_email_job_type(email_id, job_id=job_id)
-
-                if job_type == "unknown":
-                    self.reply_and_delete_email(email_id, job_id, "Fail! Could not identify a job type from this email. Check spelling of keywords and/or attached files and send again.")
-                    sender_notified = True
-                    self.append_ui_log(f"--> delete & reply 'could not identify job type' \n")
-                    self.audit_repo.append_audit_log(job_id=job_id, job_status="REJECTED", error_code="UNKNOWN_JOB", error_explanation=f"Unable to identify job type")
-                    continue
-                
-                if not self.friends_repo.has_job_access(email_address=email_address, job_type=job_type):
-                    self.reply_and_delete_email(email_id, job_id, f"FAIL! No access to {job_type}. Check with administrator for access.")
-                    sender_notified = True
-                    self.append_ui_log(f"--> delete & reply 'no access to {job_type} \n")
-                    self.audit_repo.append_audit_log(job_id=job_id, job_status="REJECTED", error_code="NO_ACCESS", error_explanation=f"Sender has no access to {job_type}")
-                    continue
-                
-                if not self.has_network_access():
-                    self.reply_and_delete_email(email_id, job_id, f"FAIL! No network. Try again later.")
-                    sender_notified = True
-                    self.append_ui_log(f"--> delete & reply 'no network' \n")
-                    self.audit_repo.append_audit_log(job_id=job_id, job_status="REJECTED", error_code="NO_NETWORK", error_explanation=f"No network at the moment")
-                    continue
-
-
-                # --- special cases ---    (no handover)
-
-                if job_type == "ping":
-                    #playsound(ping.wav)
-                    self.reply_and_delete_email(email_id, job_id, "PONG (robot online).")              
-                    sender_notified = True
-                    self.append_ui_log(f"--> delete & reply 'PONG' \n")
-                    self.audit_repo.append_audit_log(job_id=job_id, job_status="DONE", job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"))
-                    continue 
-                
-                
-                # --- standard pipeline ---   (with handover)
-
-                if job_type == "job1":
-                    is_valid, payload_or_error = self.precheck_job1(email_id)
-                    if not is_valid:
-                        error = payload_or_error
-                        self.reply_and_delete_email(email_id, job_id, error)
-                        sender_notified = True
-                        self.append_ui_log(f"--> delete & reply 're-check input for {job_type}' \n")
-                        self.audit_repo.append_audit_log(job_id=job_id, job_status="REJECTED", error_code="UNSPECIFIED", error_explanation=error)
-                        del is_valid, error
-                        continue
-                
-                elif job_type == "job2":
-                    is_valid, payload_or_error = self.precheck_job2(email_id)
-                    if not is_valid:
-                        error = payload_or_error
-                        self.reply_and_delete_email(email_id, job_id, error)
-                        sender_notified = True                 
-                        self.append_ui_log(f"--> delete & reply 're-check input for {job_type}' \n")
-                        self.audit_repo.append_audit_log(job_id=job_id, job_status="REJECTED", error_code="UNSPECIFIED", error_explanation=error)
-                        del error, is_valid
-                        continue
-
-
-                # --- mail accepted, now prepare for handover ---
-
-                self.send_lifesign_notice_if_first_today(email_address=email_address, job_id=job_id)
-                sender_notified = True
-
-                self.move_email_to_processing_folder(email_id)
-                payload = payload_or_error  # required for standard pipeline
-                
-                try: self.recording_process = self.start_recording(job_id)
-                except Exception: raise RuntimeError("unable to start videorecording")
-                
-                self.audit_repo.append_audit_log(job_id=job_id, job_status="QUEUED")
-                handover_data = {"system_state": "job_queued", "job_id": job_id, "job_type": job_type, "email_id": email_id, "created_at": time.time(),**payload}
-
-                try:
-                    self.filehandler.write_handover_file(handover_data)
-                except Exception as err:
-                    self.reply_and_delete_email(email_id, job_id, "FAIL! System error, your request is valid but could not start. Robot will stop (out-of-service) and your email was deleted. An automated email was sent to robot admin.")
-                    sender_notified = True
-                    self.append_ui_log(f"--> delete & reply 'system error' \n")
-                    self.audit_repo.append_audit_log(job_id=job_id, job_status="FAILED", error_code="SYSTEM_ERROR", error_explanation=err)
-                    self.enter_safestop(reason=err, job_id=job_id)
-                    
-                del handover_data, payload, payload_or_error
-                
-                if not sender_notified: raise ValueError("!!!!!!!!!!!!!!!!!!!!!!!!! add code to notify user")
-                
-                self.logger(f"return True (RPA handover needed)", job_id)
-                return True
-            
-            except Exception as err:
-                try:
-                    if not sender_notified:
-                        self.reply_and_delete_email(email_id, job_id, "Unknown system error, the robot will do a full stop (out-of-service) and your email was deleted.")
-                        sender_notified = True
-                        self.append_ui_log(f"--> delete & reply 'unknown system error' \n")
-                        self.audit_repo.append_audit_log(job_id=job_id, job_status="FAILED", error_code="SYSTEM_ERROR", error_explanation=err)
-                except Exception: pass
-
-                raise #notify sender when error and re-raise error
-                    
-        
-        
-        if self.in_dev_mode: self.in_dev_mode_use_fake_emails_once = True #remove in prod
-        #self.logger(f"return False (no unhandled emails in inbox)")
-        return False
-
-
-    def fetch_new_emails(self):
-        if self.in_dev_mode:
-            return self.fake_emails
-        else:
-            return []
-
-    def create_job_id(self) -> int:
-        job_id = int(datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
-        
-        # shady dublicate-value prevention
-        if self.last_created_job_id and job_id <= self.last_created_job_id:
-            job_id = self.last_created_job_id +1
-
-        self.last_created_job_id = job_id
-        return job_id
-
-    
-    def is_within_working_hours(self) -> bool:
-        #return False
-        now = datetime.datetime.now().time()
-        return datetime.time(5,0) <= now <= datetime.time(23,0)
-    
-
-    def has_network_access(self) -> bool:
-        #this runs at highest every hour, or before new jobs
-        #self.network_state:    None = okänt, True = online, False = no network
-        #self.logger("running")
-        
-        NETWORK_TEST_PATH = r"/"
-        now = time.time()
-
-        # inte dags än
-        if now < self.next_network_check_time:
-            return True if (self.network_state is not False) else False
-
-        try:
-            os.listdir(NETWORK_TEST_PATH)
-            online = True
-            if self.in_dev_mode: online = os.path.isfile("online.flag")
-            
-        except Exception:
-            online = False
-            
-
-        # logga / uppdatera UI bara vid förändring
-        if online != self.network_state:
-            self.network_state = online
-
-            if online:
-                self.logger("network restored")
-            else:
-                self.logger(f"WARN: network lost")
-
-        # olika pollingintervall beroende på status
-        if online:
-            self.next_network_check_time = now + 3600   # 1 h
-            if self.in_dev_mode: self.next_network_check_time = now + 2
-        else:
-            self.next_network_check_time = now + 60     # 1 min
-            if self.in_dev_mode: self.next_network_check_time = now + 2
-        
-        return online
-
-
-    def move_email_to_processing_folder(self,email):
-        #move from inbox to "processing"
-        pass
-
-
-    def send_lifesign_notice_if_first_today(self, job_id, email_address) -> None:
-        
-
-        jobs_today = self.audit_repo.count_jobs_done_today_by_user(job_id, email_address)
-
-        if jobs_today != 0:
-            return
-          
-         #under const.
-        
-        #rubrik RECEIVED re:
-        ## This is an automated reply:
-        # The robot is online(green) and your email is received.
-        # Only one "RECEIVED"-email is sent per day to prevent spamming.
-        #  A new email with the result (DONE/FAIL) will be sent when job is completed.
-        pass
-    
-
-    def delete_email(self, email_id):
-         #under construction
-         pass
-     
-
-    def reply_and_delete_email(self, email_id, job_id, message):
-        #under construction
-        return
-
-        #update also sqlite?
-
-        self.logger(f"arg: message='{message[:50]+'...' if len(message)>50 else message}'", job_id)
-        
-            # some "remove email" -action
-
-
-    def identify_email_job_type(self,email_id, job_id) -> str:
-        #add logic to identify job type
-        job_type = "ping"
-        job_type = "unknown"
-        job_type = "job1"
-        
-        self.logger(f"job_type is {job_type}", job_id)
-
-        return(job_type)
-
-
-    def precheck_job1(self, email_id) -> tuple[bool, dict]:
-
-        payload_or_error = {"sku": 111, "old_material": 222}
-        return True, payload_or_error
-
-
-    def precheck_job2(self, email_id):
-        return False,{}
-    
-
-    def start_recording(self, job_id) -> subprocess.Popen | None:
-        #written by AI
-        self.logger("running", job_id)
-
-        if self.in_dev_mode_disable_recording:
-            recording_process = None #remove in prod
-        else: #remove in prod
-            os.makedirs("recordings", exist_ok=True)
-            filename = f"recordings/{job_id}.mkv"
-
-            drawtext = (
-                f"drawtext=text='job_id  {job_id}':"
-                "x=200:y=20:"
-                "fontsize=32:"
-                "fontcolor=lightyellow:"
-                "box=1:"
-                "boxcolor=black@0.5"
-            )
-
-            if platform.system() == "Windows":
-                capture = ["-f", "gdigrab", "-i", "desktop"]
-                ffmpeg = "./ffmpeg.exe"
-                recording_process = subprocess.Popen(
-                    [ffmpeg, "-y", *capture, "-framerate", "15", "-vf", drawtext,
-                    "-vcodec", "libx264", "-preset", "ultrafast", filename],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    creationflags=getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-                )
-            else:
-                capture = ["-video_size", "1920x1080", "-f", "x11grab", "-i", ":0.0"]
-                ffmpeg = "ffmpeg"
-                recording_process = subprocess.Popen(
-                    [ffmpeg, "-y", *capture, "-framerate", "15", "-vf", drawtext,
-                    "-vcodec", "libx264", "-preset", "ultrafast", filename],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    start_new_session=True
-                )
-            time.sleep(0.2) #adding dummy time to actually start the recording
-    
-        self.ui.root.after(0, self.ui.show_recording_window)
-
-        return recording_process 
-  
-
-    def stop_recording(self, job_id=None) -> None:
-        #written by AI
-        try:
-            self.logger(" ", job_id)
-        except Exception: pass
-
-        recording_process = self.recording_process
-        self.recording_process = None
-
-        try:
-            if recording_process is not None:
-                if platform.system() == "Windows":
-                    try:
-                        recording_process.send_signal(getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM))
-                    except Exception:
-                        recording_process.terminate()
-
-                    try:
-                        recording_process.wait(timeout=8)
-                    except subprocess.TimeoutExpired:
-                        subprocess.run(
-                            ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            check=False,
-                        )
-
-                else:
-                    try:
-                        os.killpg(recording_process.pid, signal.SIGINT)
-                    except Exception:
-                        recording_process.terminate()
-
-                    try:
-                        recording_process.wait(timeout=8)
-                    except subprocess.TimeoutExpired:
-                        subprocess.run(
-                            ["killall", "-q", "-KILL", "ffmpeg"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            check=False,
-                        )
-            else:
-                # fallback if proc-object tappats bort
-                if platform.system() == "Windows":
-                    subprocess.run(
-                        ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-                else:
-                    subprocess.run(
-                        ["killall", "-q", "-KILL", "ffmpeg"],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        check=False,
-                    )
-
-        except Exception as err:
-            print("WARN from stop_recording():", err)
-
-        finally:
-            try:
-                self.ui.root.after(0, self.ui.hide_recording_window)
-            except Exception:
-                pass
-
-
-    def upload_with_retry(self,local_file="jobid.mkv", remote_path="dummy", max_attempts=3):
-        import shutil
-        
-        for attempt in range(max_attempts):
-            try:
-                # Create parent dir
-                #remote_path.parent.mkdir(parents=True, exist_ok=True)
-                
-                # Copy file
-               # shutil.copy2(local_file, remote_path)
-                
-                print(f"✓ Upload successful: {remote_path}")
-                return True
-            
-            except Exception as e:
-                wait_time = (attempt + 1) ** 2  # 1, 4, 9 seconds
-                print(f"Attempt {attempt+1}/{max_attempts} failed: {e}")
-                print(f"Retrying in {wait_time}s...")
-                time.sleep(wait_time)
-        
-        return False
-
-
-    def handle_scheduled_jobs(self) -> bool:
-
-        
-        if not self.has_network_access():
-            return False
-        
-        now = time.time()
-        
-        #dispach
-        if now > self.next_job3_check_time:
-            found = self.handle_scheduled_job_job3()
-            if found:
-                return True #yes handover needed        
-            self.next_job3_check_time = now + 3600 #1h
-            if self.in_dev_mode: self.next_job3_check_time = now + 10
-        
-        if now > self.next_job4_check_time:
-            found = self.handle_scheduled_job_job4()
-            if found:
-                return True #yes handover needed
-            self.next_job4_check_time = now + 3600 #1h
-            if self.in_dev_mode: self.next_job4_check_time = now + 10
-
-        #self.logger(f"return False (no scheduled jobs found)")
-        return False #no handover needed
-    
-
-    def unused_simulate_a_new_job3(self):
-        with open("job3.flag", "w", encoding="utf-8") as f:
-            f.write("simuation of workflow: job1")
-
-
-
-    def handle_scheduled_job_job3(self) -> bool:
-        self.logger(f"check")
-        
-        if self.in_dev_mode_use_fake_scheduledjobs == False:
-            return False
-        
-        if random.randint(0, 1) == 1: #simulation
-            return False #no jobs found
-
-        
-        #now we busy
-        self.python_is_busy = True
-        self.refresh_ui_status()
-        
-        job_id = self.create_job_id()
-        job_type="job3"
-        self.logger("new job found, job_id created", job_id)
-        self.append_ui_log("job found!")
-        self.audit_repo.append_audit_log(job_id=job_id, job_status="QUEUED", job_type=job_type, job_start_date=datetime.datetime.now().strftime("%Y-%m-%d"), job_start_time=datetime.datetime.now().strftime("%H:%M:%S"), insert_db_row=True)
-
-
-        handover_data = {"system_state": "job_queued", "job_id":job_id, "job_type": job_type}
-        self.filehandler.write_handover_file(handover_data)
-        return True
-        
-
-    def handle_scheduled_job_job4(self) -> bool:
-        #placeholder for job4 logic
-        self.logger("check job4")
-        return False
-
-
-    def handle_verification_stage(self, handover_data):
-        #a dubbel-check that the intended entered handover_data in ERP via RPA is indeed entered according to a query 
-        job_id = handover_data.get("job_id")
-        job_type = handover_data.get("job_type")
-
-        self.logger(f"fetched: {handover_data}", job_id)
-        self.audit_repo.append_audit_log(job_id=job_id, job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"), job_status="VERIFYING") 
-
-
-
-        if job_type == "job1":
-            self.verify_job1_result()
-            
-        elif job_type == "job2":
-            self.verify_job2_result()
-
-        elif job_type == "job3":
-            #add logic
-            pass
-
-        elif job_type == "job4":
-            #add logic
-            pass
-
-
-        time.sleep(3) #simulate job_verifying
-        self.audit_repo.append_audit_log(job_id=job_id, job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"), job_status="DONE") 
-        self.logger("success", job_id)
-        self.reset_after_verification(job_id)
-
-
-    def verify_job1_result(self):
-        """Query ERP to confirm job1 was entered correctly"""
-        pass
-
-    def verify_job2_result(self):
-        pass
-
-    def reset_after_verification(self, job_id) -> None:
-        self.stop_recording(job_id)
-
-        count = self.audit_repo.query_count_jobs_done_today()
-        self.ui.root.after(0, lambda: self.ui.set_jobs_done_today(count))
-
-        self.filehandler.write_handover_file({"system_state": "idle"})
-        self.logger("state: job_verifying -> idle", job_id)
-        time.sleep(0.1) # to allow set_ui_status: online
-       
-      
-class StopFlagWatcher:
-    #CPU-polls for stop.flag (which is created by RPA on operator stop) and kills py if found
-    def __init__(self, ui):
-        self.ui = ui
-
-    def watch_stop_flag(self):
-        print("stopflagwatcher() alive")
-        while True:
-            time.sleep(1)
-            if os.path.isfile("stop.flag"):
-                try: os.remove("stop.flag")
-                except Exception: pass
-                print("stop.flag found, requesting showdown")
-                
-                try: self.ui.root.after(0, lambda: self.ui.shutdown()) #request soft-exit from g if possible
-                except Exception: os._exit(1)
-                
-                time.sleep(3)
-                os._exit(1)  #kill if still alive after 3 sec soft-exit 
-
-
-class Sqlite: #keep or remove?
-    def __init__(self) -> None:
-        
-        # Connect
-        self.db = sqlite3.connect("log.db")
-        self.db.row_factory = sqlite3.Row
+    #extra below unused so far.. keep or remove ?
 
     # Recent jobs
     def get_recent_jobs(self,limit=10):
@@ -1197,36 +937,358 @@ class Sqlite: #keep or remove?
         """)
         return cur.fetchall()
 
-# Display in UI
-def get_dashboard_stats(self):
-    """Stats for dashboard display"""
-    db = sqlite3.connect("log.db")
-    db.row_factory = sqlite3.Row
-    
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # Today's summary
-    cur = db.cursor()
-    cur.execute("""
-        SELECT 
-            SUM(CASE WHEN job_status='DONE' THEN 1 ELSE 0 END) as done,
-            SUM(CASE WHEN job_status='FAILED' THEN 1 ELSE 0 END) as failed,
-            SUM(CASE WHEN job_status='REJECTED' THEN 1 ELSE 0 END) as rejected,
-            SUM(CASE WHEN job_status='RPA_RUNNING' THEN 1 ELSE 0 END) as running
-        FROM audit_log
-        WHERE job_start_date = ?
-    """, (today,))
-    
-    row = cur.fetchone()
-    return {
-        "completed": row['done'] or 0,
-        "failed": row['failed'] or 0,
-        "rejected": row['rejected'] or 0,
-        "in_progress": row['running'] or 0,
-    }
+    # Display in UI
+    def get_dashboard_stats(self):
+        """Stats for dashboard display"""
+        db = sqlite3.connect("log.db")
+        db.row_factory = sqlite3.Row
+        
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # Today's summary
+        cur = db.cursor()
+        cur.execute("""
+            SELECT 
+                SUM(CASE WHEN job_status='DONE' THEN 1 ELSE 0 END) as done,
+                SUM(CASE WHEN job_status='FAILED' THEN 1 ELSE 0 END) as failed,
+                SUM(CASE WHEN job_status='REJECTED' THEN 1 ELSE 0 END) as rejected,
+                SUM(CASE WHEN job_status='RPA_RUNNING' THEN 1 ELSE 0 END) as running
+            FROM audit_log
+            WHERE job_start_date = ?
+        """, (today,))
+        
+        row = cur.fetchone()
+        return {
+            "completed": row['done'] or 0,
+            "failed": row['failed'] or 0,
+            "rejected": row['rejected'] or 0,
+            "in_progress": row['running'] or 0,
+        }
 
 
-class Graphics:
+class NetworkMonitor:
+    def __init__(self, append_system_log, in_dev_mode) -> None:
+        self.append_system_log = append_system_log
+        self.network_state = None
+        self.next_network_check_time = 0
+        self.NETWORK_TEST_PATH = r"/" #enter path to network drive here, e.g. "G:\"
+
+        self.in_dev_mode = in_dev_mode
+
+
+    def is_allowed_sender(self) -> bool:
+        #this runs at highest every hour, or before new jobs
+
+        now = time.time()
+
+        if now < self.next_network_check_time:
+            return True if (self.network_state is not False) else False
+
+        try:
+            os.listdir(self.NETWORK_TEST_PATH)
+            online = True
+            
+        except Exception:
+            online = False
+            
+
+        # logga / uppdatera UI bara vid förändring
+        if online != self.network_state:
+            self.network_state = online
+
+            if online:
+                self.append_system_log("network restored")
+            else:
+                self.append_system_log(f"WARN: network lost")
+
+        # olika pollingintervall beroende på status
+        if online:
+            self.next_network_check_time = now + 3600   # 1 h
+        else:
+            self.next_network_check_time = now + 60     # 1 min
+        
+        return online
+
+
+
+########## Below are the three main-classes ##########################
+
+#Core automation logic with job processing pipeline
+class RobotRuntime:
+
+    def __init__(self, ui):
+
+        self.in_dev_mode = True
+
+        self.ui = ui
+        self.handover_repo = HandoverRepository(append_system_log=self.append_system_log)  #nu äger Runtime en handover_repo (som får med append-metod)
+        self.friends_repo = FriendsRepository(append_system_log=self.append_system_log)
+        self.network_monitor = NetworkMonitor(append_system_log=self.append_system_log, in_dev_mode=self.in_dev_mode)
+        self.recording_service = RecordingService(append_system_log=self.append_system_log, ui=self.ui, in_dev_mode=self.in_dev_mode) #nu har vi skapar EN instans av denna klass, och vi kan skicka denna instans både till email-jobb, verification, och scheduled-job
+        self.audit_repo = AuditRepository(append_system_log=self.append_system_log)
+        self.email_job_handler = EmailJobHandler(append_system_log=self.append_system_log, append_ui_log=self.append_ui_log, friends_repo=self.friends_repo, update_ui_status=self.update_ui_status, generate_job_id=self.generate_job_id, is_within_operating_hours=self.is_within_operating_hours, network_monitor=self.network_monitor, recording_service=self.recording_service, enter_safestop=self.enter_safestop, handover_repo=self.handover_repo, audit_repo=self.audit_repo, in_dev_mode=self.in_dev_mode)
+        self.scheduled_job_handler = ScheduledJobHandler(append_system_log=self.append_system_log, append_ui_log=self.append_ui_log, update_ui_status=self.update_ui_status, generate_job_id=self.generate_job_id, is_within_operating_hours=self.is_within_operating_hours, network_monitor=self.network_monitor, recording_service=self.recording_service, enter_safestop=self.enter_safestop, handover_repo=self.handover_repo, audit_repo=self.audit_repo, in_dev_mode=self.in_dev_mode)
+        self.job_verifier = JobVerifier(append_system_log=self.append_system_log, ui=self.ui, audit_repo=self.audit_repo, email_job_handler = self.email_job_handler, recording_service=self.recording_service, handover_repo=self.handover_repo)
+        self._safestop_entered = False    
+
+    
+    def initialize_runtime(self):
+        if self.in_dev_mode: self.handover_repo.write_file({"system_state":"idle"}) # when deployed RPA will do this before running main.py
+
+
+        VERSION = 0.4
+        self.append_system_log(f"RuntimeThread started, version={VERSION}")
+
+        # cleanup
+        for fn in ["stop.flag", "reboot.flag", "reboot_ready.flag"]:
+            try: os.remove(fn)
+            except Exception: pass
+
+        atexit.register(self.recording_service.stop) #extra protection during normal python exit
+        self.recording_service.stop() #stop any remaing recordings 
+        self.network_monitor.is_allowed_sender()
+
+        try: self.friends_repo.refresh_friends_access(force_reload=True)
+        except Exception as err: self.enter_safestop(reason=err)
+
+        try: self.audit_repo.create_db_if_first_run()
+        except Exception as err: self.enter_safestop(reason=err)
+
+        try:
+            count = self.audit_repo.count_completed_jobs_today()
+            self.ui.root.after(0, lambda: self.ui.set_jobs_done_today(count))
+        except Exception as err: self.enter_safestop(reason=err)
+
+        #self._init_audit_db()
+
+
+    def update_ui_status(self, arg=None) -> None:
+        try:
+            handover_data = self.handover_repo.read_file()
+            system_state = handover_data.get("system_state")
+            print("poll handover.txt from refresh_ui...()")
+        except Exception:
+            system_state = None
+
+        if self._safestop_entered or system_state == "safestop":
+            ui_status = "safestop"
+
+        elif arg == "working" or system_state in ("job_queued", "job_running", "job_verifying"):
+            ui_status = "working"
+
+        elif self.network_monitor.network_state is False:
+            ui_status = "no network"
+
+        elif not self.is_within_operating_hours():
+            ui_status = "ooo"
+
+        else:
+            ui_status = "online"
+
+        self.ui.root.after(0, lambda: self.ui.update_status_display(ui_status))
+
+
+    def run(self) -> None:
+        self.initialize_runtime()
+
+        sleep_s = 1       
+        watchdog_timeout = 600 #10 min
+
+        prev_system_state = None
+        rpa_stalled_since = None
+
+        while True:
+            try:
+                handover_data = self.handover_repo.read_file()
+                system_state = handover_data.get("system_state")
+                
+                #dispatch
+                if system_state == "idle":
+                    self.check_for_jobs()  #set system_state=job_queued if RPA proccessing needed
+                    time.sleep(sleep_s)
+
+                elif system_state == "job_queued":  #RPA-poll trigger
+                    time.sleep(sleep_s)
+
+                elif system_state == "job_running":  #RPA set system_state=job_running when job fetched
+                    time.sleep(sleep_s)
+
+                elif system_state == "job_verifying":       #RPA set system_state=job_verifying when job completed
+                    self.job_verifier.process_verification(handover_data) 
+
+                elif system_state == "safestop":  #only RPA can trigger 'safestop' this way 
+                    self.email_job_handler.reply_and_delete(email_id=handover_data.get("email_id"), job_id=handover_data.get("job_id"), message="rpa crash")
+                    self.enter_safestop(reason="RPA safestop", job_id=handover_data.get("job_id"))
+                    
+
+                #log all system_state transitions
+                if system_state != prev_system_state:
+                    self.append_system_log(f"state transition detected by CPU-poll: {prev_system_state} -> {system_state}")
+                    print("state is", system_state)
+
+                    #update DB and set hang_timer
+                    if system_state == "job_queued":
+                        rpa_stalled_since = time.time()  #time.time() is float for 'how many seconds have passed this epoch'
+                    elif system_state == "job_running":
+                        rpa_stalled_since = time.time()
+                        self.audit_repo.update_job_audit(job_id=handover_data.get("job_id"), job_status="RUNNING")
+                    else:
+                        rpa_stalled_since = None
+
+                #detect RPA hang (actually: if no system_state transition from RPA )
+                if rpa_stalled_since and system_state in ("job_queued", "job_running") and time.time() - rpa_stalled_since > watchdog_timeout:
+                    self.email_job_handler.reply_and_delete(email_id=handover_data.get("email_id"), job_id=handover_data.get("job_id"), message="FAILED. This is a timeout error, very bad error, and you _NEED_ to watch video")
+                    rpa_stalled_since = None
+                    self.enter_safestop(reason="RPA timeout - no progress for 10 min", job_id=handover_data.get("job_id"))
+                    
+                
+                prev_system_state = system_state
+                #self.python_is_busy = False
+                self.update_ui_status()
+                #print(".", end="", flush=True)
+                 
+            except Exception:
+                reason = traceback.format_exc()                
+                self.enter_safestop(reason=reason)             
+
+
+    def append_ui_log(self, text:str) -> None:
+        #wrapper
+        self.ui.root.after(0, lambda: self.ui.append_log_line(text))
+
+
+    def append_system_log(self, event_text: str, job_id=None):
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") #+ "."+str(datetime.datetime.now().microsecond)[:-4]
+        try: caller_name = sys._getframe(1).f_code.co_name
+        except Exception: caller_name ="caller_name error"
+        job_part = f" | JOB {job_id}" if job_id else ""
+        log_line = f"{timestamp} | PY{job_part} | {caller_name}() {event_text}"
+        
+        try:
+            self.append_ui_log(log_line) #system.log is more important
+        except Exception:
+            pass
+        
+        last_err = None
+        for i in range(7):
+            try:
+                with open("system.log", "a", encoding="utf-8") as f:
+                    f.write(log_line + "\n")
+                    f.flush()
+                    os.fsync(f.fileno())
+                return 
+
+            except Exception as err:
+                last_err = err
+                print(f"WARN: retry {i+1}/7 from append_system_log():", err)
+                if not self.in_dev_mode: time.sleep(i+1) #fail fast in dev
+
+        raise RuntimeError(f"append_system_log() failed after 7 attempts: {last_err}")
+
+ 
+    def enter_safestop(self, reason, job_id=None) -> Never | None:
+        #critical errors and crashes end up here
+
+        print("ROBOTRUNTIME CRASHED:\n", reason)
+
+        
+        if self._safestop_entered: return #re-entrancy protection
+        self._safestop_entered = True 
+
+        try: self.append_system_log(f"CRASH: {reason}", job_id)
+        except Exception: pass
+
+        try: self.send_admin_alert(reason)
+        except Exception: pass
+
+        try: self.append_ui_log("Error-email sent to admin. All automations halted")
+        except Exception: pass
+
+        try: self.recording_service.stop()
+        except Exception: pass
+
+        try: self.ui.root.after(0, lambda: self.ui.update_status_display("safestop")) 
+        except Exception:
+            print("unable to set ui_status text to 'safestop', shutting down...")
+            try:
+                self.ui.root.after(0, lambda: self.ui.shutdown())
+            except:
+                print("unable to soft-shutdown. Forcing exit")
+                os._exit(1)
+            time.sleep(3)
+            os._exit(1)  #kill if still alive after 3 sec soft-shutdown 
+
+        self.wait_for_reboot_after_safestop(job_id)
+    
+
+    def wait_for_reboot_after_safestop(self, job_id) -> Never:
+        #experimental
+        try: self.append_system_log("running", job_id)
+        except Exception: pass
+
+        while True:
+            time.sleep(1)
+            try:
+                if os.path.isfile("reboot.flag"):
+                    os.remove("reboot.flag")
+                    open("reboot_ready.flag", "w").close()
+                    os._exit(1)
+            except Exception: pass
+
+
+    def send_admin_alert(self, reason):
+        # add logic to email admin
+        pass
+
+
+    def check_for_jobs(self) -> None:
+        
+        if self.friends_repo.refresh_friends_access(): self.append_system_log(f"friends.xlsx reloaded")
+
+        
+        #return stops further checks
+        did_RPA_handover = self.email_job_handler.process_inbox()
+        if did_RPA_handover:
+            return
+
+        did_RPA_handover = self.scheduled_job_handler.process_scheduled_jobs()
+        if did_RPA_handover:
+            return
+        
+        #placeholder other tasks
+        
+ 
+    def generate_job_id(self) -> int:
+        """ makes the unique value assosiated with this job """
+        time.sleep(1) # shady dublicate-value prevention
+
+        job_id = int(datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
+        return job_id
+
+    
+    def is_within_operating_hours(self) -> bool:
+        #return False
+        now = datetime.datetime.now().time()
+        return datetime.time(5,0) <= now <= datetime.time(23,0)
+    
+
+    def poll_for_stop_flag(self):
+        print("poll_for_stop_flag() alive")
+        while True:
+            time.sleep(1)
+            if os.path.isfile("stop.flag"):
+                try: os.remove("stop.flag")
+                except Exception: pass
+                print("stop.flag found, requesting showdown")
+                
+                try: self.ui.root.after(0, lambda: self.ui.shutdown()) #request soft-exit from g if possible
+                except Exception: os._exit(1)
+                
+                time.sleep(3)
+                os._exit(1)  #kill if still alive after 3 sec soft-exit 
+
+
+class DashboardUI:
     # Tkinter dashboard for monitoring
     def __init__(self):
         bg_color ="#000000" #or "#111827"
@@ -1238,7 +1300,11 @@ class Graphics:
         self._build_footer(bg_color, text_color)
         
         #self.debug_grid(self.root)
-        self.root.after(0, self._start_worker_threads) #start worker-threads _after_ ui
+    
+    def attach_runtime(self, robot_runtime) -> None:
+        self.robot_runtime = robot_runtime
+
+    def run(self) -> None:
         self.root.mainloop()
 
 
@@ -1254,7 +1320,7 @@ class Graphics:
         self.root.protocol("WM_DELETE_WINDOW", self.shutdown)
 
         self.root.title('RPA dashboard')
-        self.create_recording_window()
+        self._create_recording_overlay()
 
                 # --- Layout: root uses grid ---
         self.root.grid_rowconfigure(1, weight=1)
@@ -1353,21 +1419,6 @@ class Graphics:
         self.extended_log_button.grid(row=0, column=4, padx=8, pady=16)
 
 
-    def _start_worker_threads(self):
-        self.worker = Worker(self) # self = ui:"g" 
-        threading.Thread(target=self.worker.main_loop, daemon=True).start()
-
-        #to kill py on operator RPA stop (RPA stop creates stop.flag (what about crash?))
-        self.stop_flag_watcher = StopFlagWatcher(self)
-        threading.Thread(target=self.stop_flag_watcher.watch_stop_flag, daemon=True).start()
-
-
-        #!!!!!!!!!!! #will be replaced by real RPA when deployed
-        
-        self.RPA_simulator = RPA_simulator() 
-        threading.Thread(target=self.RPA_simulator.run, args=(), daemon=True).start()
-
-
     def debug_grid(self,widget):
         #highlights all gris with red
         for child in widget.winfo_children():
@@ -1378,7 +1429,7 @@ class Graphics:
             self.debug_grid(child)
 
 
-    def set_ui_status(self, status=None):
+    def update_status_display(self, status=None):
         #sets the status
 
         #stops any ongoing animations
@@ -1414,6 +1465,59 @@ class Graphics:
 
     def set_jobs_done_today(self, n) -> None:
         self.jobs_done_label.config(text=str(n))
+
+
+    def _create_recording_overlay(self) -> None:
+        #written by AI
+        self.recording_win = tk.Toplevel(self.root)
+        self.recording_win.withdraw()                 # hidden at start
+        self.recording_win.overrideredirect(True)    # no title/boarder
+        self.recording_win.configure(bg="black")
+
+        try: self.recording_win.attributes("-topmost", True)
+        except Exception: pass
+
+        width = 250
+        height = 110
+        x = self.root.winfo_screenwidth() - width - 30
+        y = (self.root.winfo_screenheight() // 2) - (height // 2)
+        self.recording_win.geometry(f"{width}x{height}+{x}+{y}")
+
+        frame = tk.Frame(           self.recording_win,            bg="black",            highlightbackground="#444444",            highlightthickness=1,            bd=0        )
+        frame.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(        frame,        width=44,        height=44,        bg="black",        highlightthickness=0,        bd=0        )
+        canvas.place(x=18, y=33)
+        canvas.create_oval(4, 4, 40, 40, fill="#DC2626", outline="#DC2626")
+
+        label = tk.Label(            frame,            text="RECORDING",            fg="#FFFFFF",            bg="black",            font=("Arial", 20, "bold"),            anchor="w"        )
+        label.place(x=75, y=33)
+
+        
+    def show_recording_overlay(self) -> None:
+        #written by AI
+        try:
+            width = 250
+            height = 110
+            x = self.root.winfo_screenwidth() - width - 30
+            y = (self.root.winfo_screenheight() // 2) - (height // 2)
+            self.recording_win.geometry(f"{width}x{height}+{x}+{y}")
+
+            self.recording_win.deiconify()
+            self.recording_win.lift()
+
+            try:
+                self.recording_win.attributes("-topmost", True)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+
+    def hide_recording_overlay(self) -> None:
+        #hides recording window
+        try: self.recording_win.withdraw()
+        except Exception: pass
 
 
     def _start_working_animation(self):
@@ -1463,78 +1567,23 @@ class Graphics:
         self.log_text.config(state="disabled")
         self.log_text.see("end")
 
-        
+
     def do_something(self):
         pass
    
-
-    def create_recording_window(self) -> None:
-        #written by AI
-        self.recording_win = tk.Toplevel(self.root)
-        self.recording_win.withdraw()                 # hidden at start
-        self.recording_win.overrideredirect(True)    # no title/boarder
-        self.recording_win.configure(bg="black")
-
-        try: self.recording_win.attributes("-topmost", True)
-        except Exception: pass
-
-        width = 250
-        height = 110
-        x = self.root.winfo_screenwidth() - width - 30
-        y = (self.root.winfo_screenheight() // 2) - (height // 2)
-        self.recording_win.geometry(f"{width}x{height}+{x}+{y}")
-
-        frame = tk.Frame(           self.recording_win,            bg="black",            highlightbackground="#444444",            highlightthickness=1,            bd=0        )
-        frame.pack(fill="both", expand=True)
-
-        canvas = tk.Canvas(        frame,        width=44,        height=44,        bg="black",        highlightthickness=0,        bd=0        )
-        canvas.place(x=18, y=33)
-        canvas.create_oval(4, 4, 40, 40, fill="#DC2626", outline="#DC2626")
-
-        label = tk.Label(            frame,            text="RECORDING",            fg="#FFFFFF",            bg="black",            font=("Arial", 20, "bold"),            anchor="w"        )
-        label.place(x=75, y=33)
-
-
-    def show_recording_window(self) -> None:
-        #written by AI
-        try:
-            width = 250
-            height = 110
-            x = self.root.winfo_screenwidth() - width - 30
-            y = (self.root.winfo_screenheight() // 2) - (height // 2)
-            self.recording_win.geometry(f"{width}x{height}+{x}+{y}")
-
-            self.recording_win.deiconify()
-            self.recording_win.lift()
-
-            try:
-                self.recording_win.attributes("-topmost", True)
-            except Exception:
-                pass
-        except Exception:
-            pass
-
-
-    def hide_recording_window(self) -> None:
-        #hides recording window
-        try: self.recording_win.withdraw()
-        except Exception: pass
-
 
     def shutdown(self) -> Never | None:
         if self._closing: return
         self._closing = True
 
-        try: self.worker.stop_recording()
-        except Exception: pass
-
-        try: self.hide_recording_window()
+        try: self.robot_runtime.recording_service.stop()
         except Exception: pass
 
         self.root.destroy()
         
 
-class RPA_simulator:
+class RPASimulator:
+    """ simulating the behaviour of the external RPA software"""
     #temporary! ignore this class in all eveluations
 
     def __init__(self):
@@ -1543,6 +1592,7 @@ class RPA_simulator:
         with open("handover.txt", "w", encoding="utf-8") as f:
             f.write("system_state=idle")
         time.sleep(1)
+
 
     def check_for_rebootflag(self):
         import os.path
@@ -1555,8 +1605,7 @@ class RPA_simulator:
             subprocess.run([sys.executable, "main.py",], start_new_session=True)
 
 
-  
-    def logger(self, text: str, job_id=None):
+    def append_system_log(self, text: str, job_id=None):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S") #+ str(datetime.datetime.now().microsecond)[:-4]
    
         job_part = f" | JOB {job_id}" if job_id else ""
@@ -1570,13 +1619,13 @@ class RPA_simulator:
                 return 
 
             except Exception as e:
-                print(f"{i}st warning from logger():", e)
+                print(f"{i}st warning from append_system_log():", e)
     
 
     #läs handover.txt och kolla ifall "queued"
     def run(self):
-        print("RPA_simulator() I'm alive")
-        self.logger("RPA I'm alive")
+        print("RPASimulator() I'm alive")
+        self.append_system_log("RPA I'm alive")
 
         #do a time-check to not start old jobs? 
 
@@ -1600,15 +1649,13 @@ class RPA_simulator:
                 continue
 
 
-
-            
             #om "queued ändra till "job_running" och sov 2 sek
             else:
                 handover_data = { "system_state": "job_running",  "job_id": job_id }
-                self.logger(f"system_state: job_queued -> job_running", job_id)
-                self.logger(f"recieved:{handover_data}",job_id)
+                self.append_system_log(f"system_state: job_queued -> job_running", job_id)
+                self.append_system_log(f"recieved:{handover_data}",job_id)
 
-                print("RPA_simulator() jobb påbörjas. system_state: job_queued -> job_running")
+                print("RPASimulator() jobb påbörjas. system_state: job_queued -> job_running")
                 
                 dir_path = os.path.dirname(os.path.abspath("handover.txt"))
                 fd, temp_path = tempfile.mkstemp(dir=dir_path)
@@ -1625,9 +1672,9 @@ class RPA_simulator:
 
                 processtid= random.randint(2,4)
                 time.sleep(processtid)
-                self.logger(f"screen_1 completed", job_id)
+                self.append_system_log(f"screen_1 completed", job_id)
                 time.sleep(3)
-                self.logger(f"screen_2 completed", job_id)
+                self.append_system_log(f"screen_2 completed", job_id)
 
                 #ändra sen till "job_verifying"
                 handover_data = { "system_state": "job_verifying",  "job_id": job_id , "job_type": job_type}
@@ -1644,9 +1691,24 @@ class RPA_simulator:
                     tmp.flush()
                     os.fsync(tmp.fileno())
                 os.replace(temp_path, "handover.txt")
-                print("async RPA_simulator(): handover, system_state: job_running -> job_verifying")
-                self.logger(f"done, system_state: job_running -> job_verifying", job_id)
+                print("async RPASimulator(): handover, system_state: job_running -> job_verifying")
+                self.append_system_log(f"done, system_state: job_running -> job_verifying", job_id)
 
-#start ui
-g = Graphics()
 
+
+def main() -> None:
+    ui = DashboardUI()
+    robot_runtime = RobotRuntime(ui)
+    rpa_simulator = RPASimulator()
+
+    ui.attach_runtime(robot_runtime)
+
+    threading.Thread(target=robot_runtime.run, daemon=True).start()
+    threading.Thread(target=robot_runtime.poll_for_stop_flag, daemon=True).start() # kills py on manual external-RPA stop by operator (add logic to external RPA)
+    threading.Thread(target=rpa_simulator.run, daemon=True).start() #replace with external RPA when deployed
+
+    ui.run()
+
+
+if __name__ == "__main__":
+    main()
