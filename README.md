@@ -41,12 +41,15 @@ They communicate through a simple file-based IPC mechanism (`handover.txt`).
 
 ## Architecture
 
+<img width="1156" height="1921" alt="workflow" src="https://github.com/user-attachments/assets/aadd3936-756c-42f3-9d8a-333dd48fbbf0" />
+
 The diagram shows how:
 
 * Python (backend) and RPA (front-end) run independently
 * Both operate in their own loops
 * State is synchronized via handover.txt
 * Failures transition the system into safestop
+
 
 ## Features
 
