@@ -6,14 +6,14 @@ A lightweight local orchestrator for email- and data-driven automation, delegati
 
 ## Overview
 
-**LocalRPA Orchestrator** is a minimal Python runtime designed to automate business tasks in small teams (≈5–10 users) without requiring complex infrastructure or licenses.
+**LocalRPA Orchestrator** is a minimal Python runtime designed to orchestrate automations tasks in small teams.
 
 It runs locally on a standard operator machine and acts as the **control layer** between:
 
 * incoming job triggers (email, shared inbox, data queries)
 * and external RPA tools (UiPath, Power Automate, Blue Prism, etc.)
 
-This project is intentionally simple, robust, and low-cost.
+This project is intentionally designed for small, local deployments without infrastructure or licensing overhead.
 
 ---
 
@@ -41,19 +41,12 @@ They communicate through a simple file-based IPC mechanism (`handover.txt`).
 
 ## Architecture
 
-```
-[Email / ERP / Scheduler]
-            ↓
-   LocalRPA Orchestrator (Python)
-            ↓
-      handover.txt (IPC)
-            ↓
-   External RPA (UiPath / etc.)
-            ↓
-        Business System
-```
+The diagram shows how:
 
----
+* Python (backend) and RPA (front-end) run independently
+* Both operate in their own loops
+* State is synchronized via handover.txt
+* Failures transition the system into safestop
 
 ## Features
 
@@ -62,16 +55,13 @@ They communicate through a simple file-based IPC mechanism (`handover.txt`).
 * Data-driven jobs (ERP/query simulation)
 * File-based IPC (`handover.txt`)
 * SQLite audit logging (`audit.db`)
-* Strict job lifecycle tracking:
-
-  * RECEIVED → QUEUED → RUNNING → VERIFYING → DONE / FAIL
-* Cold-start design (no resume policy)
 * Crash-safe mode (`safestop`)
 * Manual reboot mechanism (`reboot.flag`)
 * Network-aware execution
 * Built-in screen recording (ffmpeg)
 * Works without admin rights
-* Runs on both Windows (prod) and Linux (dev)
+* Easy to share the full runtime with an AI assistant
+* Runs on both Windows and Linux
 
 ---
 
@@ -138,9 +128,9 @@ The orchestrator and RPA communicate via a shared JSON file.
 ## Safety Model
 
 * No resume: crashed jobs do not continue
-* Watchdog timeout for stuck RPA (default ~10 min)
+* Watchdog timeout for RPA stalls
 * All critical errors → `safestop`
-* Operator can trigger recovery via:
+* Manual recovery via:
 
   * `reboot.flag`
 * System can kill external processes to reset environment
@@ -215,8 +205,8 @@ python main.py
 
 Use included dev tools:
 
-* `fake_work_generator.py`
-* `front-end_rpa_simulator.py`
+* `fake_jobs_generator.py`
+* `frontend_rpa_simulator.py`
 
 ---
 
@@ -229,8 +219,7 @@ shared_inbox/
 handover.txt
 audit.db
 friends.xlsx
-recordings_in_progress/
-recordings_destination/
+recordings/
 ```
 
 ---
@@ -249,14 +238,12 @@ recordings_destination/
 
 * Not designed for large-scale orchestration
 * No distributed execution
-* File-based IPC (not message queue)
+* File-based IPC only
 * Minimal error recovery (by design)
 
 ---
 
 ## Why not just use Robot Framework?
-
-This project targets a different niche:
 
 | Robot Framework                    | LocalRPA Orchestrator          |
 | ---------------------------------- | ------------------------------ |
