@@ -1,14 +1,14 @@
 # LocalRPA Orchestrator
 
-A lightweight local orchestrator for email- and data-driven automation, delegating execution to external screen-based RPA tools.
+A lightweight local orchestrator that bridges business triggers and screen-based RPA.
 
 ---
 
 ## Overview
 
-This project is a lightweight local RPA orchestrator written in Python.
+This project is a mini RPA orchestrator written in Python.
 
-It is designed as a small-scale alternative where enterprise orchestrators would be unnecessary,
+It is designed as a small-scale alternative where enterprise orchestrators would be unnecessary overhead,
 focusing on clarity, ease of modification, and running on a single machine.
 
 It does NOT replace RPA tools.
@@ -22,9 +22,9 @@ to perform screen-based automation.
 
 ## Typical examples
 
-A typical email-driven flow is that a user sends an email to the robot asking it to perform a task. The orchestrator reads the request, validates the input, prepares the required payload, and writes the handover state. The front-end RPA tool then picks up the job and performs the UI actions.
+In an email-driven flow, a user sends a request to the robot. The orchestrator reads the request, validates the input, prepares the required payload, and writes the handover state. The front-end RPA tool then picks up the job and performs the UI actions.
 
-Another main flow is data-driven. In that case, the orchestrator itself discovers work by polling a query or another data source. When it finds a valid case, it prepares the required values and signals the front-end RPA to execute the task.
+Another common trigger is data-driven. In that case, the orchestrator discovers work by polling a query or another data source. When it finds a valid case, it prepares the required values and signals the front-end RPA to execute the task.
 
 Example dashboard during runtime:
 <img width="1209" height="635" alt="example_dash" src="https://github.com/user-attachments/assets/dc12a84b-c329-4b91-b402-387128197f9a" />
@@ -64,7 +64,7 @@ The diagram defines the interaction:
 * Both operate in their own loops
 * State is synchronized via handover.json
 * Failures transition the system into safestop
-* Your front-end RPA tool must be built to follow this model
+* Your front-end RPA tool should follow this model
 
 
 ## Features
@@ -72,13 +72,14 @@ The diagram defines the interaction:
 * Email-driven job processing (personal inbox)
 * Shared inbox support (extensible)
 * Data-driven jobs (ERP/query simulation)
+* File-based IPC (`handover.json`)
 * SQLite audit logging (`job_audit.db`)
 * Crash-safe mode (`safestop`)
-* remote reboot mechanism (`reboot.flag`)
+* Remote reboot mechanism (`reboot.flag`)
 * Built-in screen recording (ffmpeg)
-* Works without admin rights
-* Runs on both Windows and Linux
-* Just one file makes it easy to share all code with an AI assistant (`main.py`)
+* Runs without administrator rights
+* Cross-platform (Windows and Linux)
+* Single-file runtime (`main.py`) for easy sharing and inspection
 
 ---
 
@@ -88,7 +89,8 @@ The diagram defines the interaction:
 * **Local-first execution**
 * **Fail fast and visibly**
 * **Deterministic job lifecycle**
-* **Complete runtime in one file**
+* **Minimal dependencies and infrastructure**
+* **Transparent state (file + database)**
 * **Cheap to deploy and operate**
 
 ---
@@ -213,11 +215,11 @@ recordings/
 
 ## Philosophy
 
-> This is not a full RPA platform.
-> It is the simplest possible layer between:
->
-> * business triggers (email/data)
-> * and UI automation (RPA tools)
+This is not a full RPA platform.
+It is the simplest possible layer between:
+
+* business triggers (email/data)
+* and UI automation (RPA tools)
 
 ---
 
@@ -233,4 +235,4 @@ Early-stage / experimental, but functional.
 
 ---
 
-I got help from AI writing this readme
+> I got help writing this readme
