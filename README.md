@@ -52,19 +52,20 @@ They communicate through a file-based IPC mechanism (`handover.json`).
 
 ## Architecture
 
-<img width="1156" height="1921" alt="workflow" src="https://github.com/user-attachments/assets/efeeebb2-151d-47a3-a575-f1ecb372fe21" />
+<img width="1156" height="1921" alt="workflow" src="https://github.com/user-attachments/assets/c00d4ad7-a98e-4170-9b19-043f90f23c4b" />
 
-The diagram shows how:
+The diagram defines the interaction:
 
-* Python (backend) and RPA (front-end) run independently
+* Python (back-end) and RPA (front-end) run independently
 * Both operate in their own loops
-* State is synchronized via handover.txt
+* State is synchronized via handover.json
 * Failures transition the system into safestop
+* Your front-end RPA tool must be build to follow this model
 
 
 ## Features
 
-* Email-driven job processing (own inbox)
+* Email-driven job processing (personal inbox)
 * Shared inbox support (extensible)
 * Data-driven jobs (ERP/query simulation)
 * File-based IPC (`handover.json`)
@@ -104,7 +105,7 @@ All sources produce standardized **candidates**, processed through a unified flo
 
 ## Job Lifecycle
 
-Jobs are tracked in SQLite (`audit.db`) with clear states:
+Jobs are tracked in SQLite (`job_audit.db`) with clear states:
 
 * `REJECTED` – invalid request / no access
 * `QUEUED` – waiting for RPA
@@ -139,6 +140,16 @@ The handover file represents both:
 
 ---
 
+## Example Dashboard
+
+<img width="1209" height="635" alt="example_dash" src="https://github.com/user-attachments/assets/dc12a84b-c329-4b91-b402-387128197f9a" />
+
+The dashboard shows:
+* Email Pipeline in different scenarious
+* Scheduled Jobs Pipeline
+
+---
+
 ## Running the Project
 
 ### Requirements
@@ -170,10 +181,10 @@ Use included dev tools:
 
 ```
 main.py
-own_inbox/
+personal_inbox/
 shared_inbox/
 handover.txt
-audit.db
+job_audit.db
 friends.xlsx
 recordings/
 ```
