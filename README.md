@@ -246,7 +246,18 @@ This project instead focuses on:
 * Tight coupling to UI automation (via RPA)
 
 ---
+## What you will likely need to adapt
 
+Most users will need to replace or customize:
+
+- the mail backend
+- the ERP/data backend
+- the job handlers
+- the network health check path
+- the screen-recording destination
+- the RPA tool implementation
+
+---
 ## Limitations
 
 * Not designed for large-scale orchestration
