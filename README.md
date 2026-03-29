@@ -264,9 +264,14 @@ Most users will need to replace or customize:
 * No distributed execution
 * File-based IPC only
 * Minimal error recovery (by design)
+* Pure Python-only jobs are out of scope by design.
 
 
 ---
+
+## Philosophy (add this??)
+* Simplicity over scalability
+* Rather crash than guess
 
 ## License
 
