@@ -1,3 +1,24 @@
+# LocalRPA Orchestrator
+# A lightweight local Python runtime that orchestrates automation jobs from email and data sources.
+# It delegates UI execution to an external RPA tool (e.g. UiPath / Power Automate) via a file-based IPC ("handover").
+#
+# Orchestrator (this script):
+# - reads incoming jobs (email / data)
+# - validates and decides actions
+# - writes handover state for the RPA
+# - verifies results and logs to SQLite
+#
+# RPA tool:
+# - performs clicks and keyboard actions in external systems
+# - reads/writes handover file to sync state
+#
+# Design goals:
+# - run locally on a single machine (no servers or cloud)
+# - no additional backend licensing required
+# - simple, inspectable, and fail-safe (cold start, safestop)
+# - simplicity over scalability
+
+
 import time, threading, traceback, os, tempfile, sys, platform, subprocess, signal, atexit, sqlite3, datetime, shutil, re, json
 import tkinter as tk
 from openpyxl import Workbook, load_workbook #type: ignore
@@ -199,7 +220,7 @@ class ExampleMailBackend:
         # DEV STUB
 
         reply_to = candidate.sender_email
-        subject = f"{extra_subject} re: {candidate.subject}"
+        subject = f"{extra_subject} re: {candidate.subject}".replace("\n", " ") # no \n in subject
         body = f"{extra_body} \n\n - - - - - \n{candidate.body}"
 
         reply_message = f"reply stub to={reply_to}. subject={subject}'. body={body}"
@@ -634,8 +655,8 @@ class ScheduledFlow:
 
         try:
 
-                        #placeholder evaluation logic
-                        # eg. below:
+            #STUB: placeholder evaluation logic
+            # eg. below:
 
 
             job_type = self.classify_candidate(candidate_row)
@@ -884,7 +905,7 @@ class PreHandoverExecutor:
 
     # standard workflow is that executor delegates work to RPA tool
     def execute_decision(self, candidate: JobCandidate, decision: JobDecision, mail_backend: ExampleMailBackend | None=None) -> ActiveJob | None:
-        
+
         self.validate_decision_itself(decision)
         self.validate_candidate_decision_combination(candidate, decision)
 
@@ -1072,7 +1093,7 @@ class PreHandoverExecutor:
 # for closing the job
 class PostHandoverFinalizer:
     ''' the verification step, if any, is always a cold start '''
-    def __init__(self, log_system, log_ui, audit_repo, job_handlers, recording_service, ui_dot_tk_set_hide_recording_overlay, refresh_jobs_done_today_display, in_dev_mode) -> None:
+    def __init__(self, log_system, log_ui, audit_repo, job_handlers, recording_service, ui_dot_tk_set_hide_recording_overlay, in_dev_mode, mail_backend_personal, mail_backend_shared) -> None:
         self.in_dev_mode = in_dev_mode
 
         self.log_system = log_system
@@ -1081,18 +1102,17 @@ class PostHandoverFinalizer:
         self.job_handlers = job_handlers
         self.recording_service = recording_service
         self.ui_dot_tk_set_hide_recording_overlay = ui_dot_tk_set_hide_recording_overlay
-        self.refresh_jobs_done_today_display = refresh_jobs_done_today_display
-        self.mail_backend_personal = ExampleMailBackend(self.log_system, "personal_inbox",  )
-        self.mail_backend_shared = ExampleMailBackend(self.log_system, "shared_inbox",  )
+        self.mail_backend_personal = mail_backend_personal
+        self.mail_backend_shared = mail_backend_shared
 
 
-    def poll_once(self, handover_data) -> None:
+    def poll_once(self, handover_data: ActiveJob) -> None:
         # rebuild active_job objekt after cold start
-        active_job = self.rebuild_active_job(handover_data)
+        #active_job = self.rebuild_active_job(handover_data)
 
         #get id and type
-        job_id = active_job.job_id
-        job_type = active_job.job_type
+        job_id = handover_data.job_id
+        job_type = handover_data.job_type
 
         # note in audit that the job is 'taken back' from RPA
         self.log_system(f"fetched: {handover_data}", job_id)
@@ -1108,15 +1128,12 @@ class PostHandoverFinalizer:
 
         else:
             try:
-                ok_or_error = handler.verify_result(active_job)
+                ok_or_error = handler.verify_result(handover_data)
             except Exception as err:
                 ok_or_error = f"verification crash: {err}"
 
-        ok_or_error = self.finalize_job_result(ok_or_error, active_job)
+        ok_or_error = self.finalize_job_result(ok_or_error, handover_data)
 
-        return ok_or_error
-
-    
 
     def finalize_job_result(self, ok_or_error, active_job: ActiveJob):
 
@@ -1156,9 +1173,6 @@ class PostHandoverFinalizer:
             job_finish_time=datetime.datetime.now().strftime("%H:%M:%S"),
             final_reply_sent=final_reply_sent,
             )
-        
-
-        self.refresh_jobs_done_today_display()
 
         # policy to safe-stop if verification failed
         if ok_or_error != "ok":
@@ -1359,7 +1373,7 @@ class ExampleJob1Handler:
 
         error = ""
         if order_number is None:
-            error += "missing source_ref. "
+            error += "missing order_number. "
         if order_qty is None:
             error += "missing order_qty. "
         if material_available is None:
@@ -1472,20 +1486,48 @@ class HandoverRepository:
         self.log_system = log_system
         self.HANDOVER_FILE = "handover.json"
 
+        self._last_active_job: ActiveJob | None = None # cached version
+        self._last_mtime: float | None = None # cache time
 
-    def read(self) -> dict:
+
+    def read(self) -> ActiveJob:
         ''' read HANDOVER_FILE '''
         
         last_err=None
 
         for attempt in range(7):
             try:
+                # read cached version if no change
+                mtime = os.path.getmtime(self.HANDOVER_FILE)
+                if self._last_mtime == mtime and self._last_active_job is not None:
+                    return self._last_active_job
+                
+
+                # read real file
                 with open(self.HANDOVER_FILE, "r", encoding="utf-8") as f:
-                    handover_data = json.load(f)
+                    handover_data_dict = json.load(f)
+                
+                self.validate_handover_data(handover_data_dict)
 
-                self.validate_handover_data(handover_data)
-                return handover_data
+                active_job = ActiveJob(
+                    ipc_state=handover_data_dict.get("ipc_state"),
+                    job_id = handover_data_dict.get("job_id"),
+                    job_type = handover_data_dict.get("job_type"),
+                    job_source_type = handover_data_dict.get("job_source_type"),
+                    source_ref = handover_data_dict.get("source_ref"),
+                    sender_email = handover_data_dict.get("sender_email"),
+                    subject = handover_data_dict.get("subject"),
+                    body = handover_data_dict.get("body"),
+                    source_data = handover_data_dict.get("source_data"),
+                    rpa_payload = handover_data_dict.get("rpa_payload"),
+                )
 
+                # update cache
+                self._last_mtime = mtime
+                self._last_active_job = active_job
+
+                return active_job
+                
             except Exception as err:
                 last_err = err
                 print(f"WARN: retry {attempt+1}/7 : {err}")
@@ -1501,9 +1543,12 @@ class HandoverRepository:
         handover_data_asdict = asdict(handover_data)
         self.validate_handover_data(handover_data_asdict)
 
+        last_err = None
+        
         for attempt in range(7):
             temp_path = None
             try:
+                
                 dir_path = os.path.dirname(os.path.abspath(self.HANDOVER_FILE))
                 fd, temp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp")    # create temp file
 
@@ -1555,7 +1600,7 @@ class HandoverRepository:
         if ipc_state == None:
             raise ValueError(f"ipc_state missing")
         
-        if ipc_state == "idle" and (job_id or job_type or job_source_type or source_ref or sender_email or subject or body or source_data or rpa_payload):
+        if ipc_state == "idle" and any(v is not None for v in (job_id, job_type, job_source_type, source_ref, sender_email, subject, body, source_data, rpa_payload,)):
             raise ValueError(f"state 'idle' should have no more variables: {handover_data}")
 
         if ipc_state not in get_args(IpcState):
@@ -1574,6 +1619,7 @@ class HandoverRepository:
             missing = [k for k, v in required_fields.items() if v is None]  # allowing value "0"
             if missing:
                 raise ValueError(f"{ipc_state} has missing fields in {self.HANDOVER_FILE}: {missing}")
+            del missing
             
             if job_type not in get_args(JobType):
                 raise ValueError(f"unkown job_type: {job_type} for {ipc_state}")
@@ -1604,7 +1650,30 @@ class HandoverRepository:
             missing = [k for k, v in required_fields.items() if v is None] # allowing value "0"
             if missing:
                 raise ValueError(f"{job_source_type} has missing fields in {self.HANDOVER_FILE}: {missing}")
-            
+
+
+    def is_valid_ipc_transition(self, prev_ipc_state: IpcState | None, ipc_state: IpcState) -> bool:
+        """ transition-validator for RobotRuntime loop. Only runs when ipc_state != prev_ipc_state. """
+
+        if prev_ipc_state is None:
+            # at startup
+            return True
+
+        allowed_transitions: dict[IpcState, set[IpcState]] = {
+            "idle": {"job_queued", "safestop"},
+            "job_queued": {"job_running", "safestop"},
+            "job_running": {"job_verifying", "safestop"},
+            "job_verifying": {"idle", "safestop"},
+            "safestop": {"idle"},
+        }
+
+        allowed_next = allowed_transitions[prev_ipc_state]
+
+        if ipc_state not in allowed_next:
+            return False
+        return True
+        
+
 
 # ============================================================
 # RECORDING / SAFESTOP / INFRASTRUCTURE
@@ -1673,9 +1742,10 @@ class RecordingService:
         self.log_system("recording started", job_id)
   
     #stop recording
-    def stop(self, job_id=None) -> None:
+    def old_stop(self, job_id=None) -> None:
         # is allowed to do global KILL on all ffmpeg-processes
         #written by AI
+
         try:
             self.log_system("stop recording", job_id)
         except Exception: pass
@@ -1718,6 +1788,112 @@ class RecordingService:
                         )
             else:
                 # fallback if proc-object tappats bort
+                if platform.system() == "Windows":
+                    subprocess.run(
+                        ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+                else:
+                    subprocess.run(
+                        ["killall", "-q", "-KILL", "ffmpeg"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+
+        except Exception as err:
+            print("WARN from stop():", err)
+
+
+    def stop(self, job_id=None) -> None:
+        ''' making sure, since ffmpeg is an exernal process, to stop it'''
+        # written by AI
+
+        try:
+            self.log_system("stop recording", job_id)
+        except Exception:
+            pass
+
+        recording_process = self.recording_process
+        self.recording_process = None
+
+        try:
+            if recording_process is not None:
+                # try fist stop only our own porcess
+                if platform.system() == "Windows":
+                    try:
+                        recording_process.send_signal(
+                            getattr(signal, "CTRL_BREAK_EVENT", signal.SIGTERM)
+                        )
+                    except Exception:
+                        try:
+                            recording_process.terminate()
+                        except Exception:
+                            pass
+
+                    try:
+                        recording_process.wait(timeout=8)
+                        return
+                    except subprocess.TimeoutExpired:
+                        pass
+
+                    # else, kill only our own process
+                    try:
+                        subprocess.run(
+                            ["taskkill", "/PID", str(recording_process.pid), "/T", "/F"],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            check=False,
+                        )
+                        recording_process.wait(timeout=3)
+                        return
+                    except Exception:
+                        pass
+
+                    # last resort, global kill all ffmpeg
+                    subprocess.run(
+                        ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+
+                else:
+                    # try fist stop only our own process
+                    try:
+                        os.killpg(recording_process.pid, signal.SIGINT)
+                    except Exception:
+                        try:
+                            recording_process.terminate()
+                        except Exception:
+                            pass
+
+                    try:
+                        recording_process.wait(timeout=8)
+                        return
+                    except subprocess.TimeoutExpired:
+                        pass
+
+                    # else, kill only our own process
+                    try:
+                        os.killpg(recording_process.pid, signal.SIGKILL)
+                        recording_process.wait(timeout=3)
+                        return
+                    except Exception:
+                        pass
+
+                    # last resort, global kill all ffmpeg
+                    subprocess.run(
+                        ["killall", "-q", "-KILL", "ffmpeg"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
+
+            else:
+                # fallback if process object is lost
                 if platform.system() == "Windows":
                     subprocess.run(
                         ["taskkill", "/IM", "ffmpeg.exe", "/T", "/F"],
@@ -1784,30 +1960,27 @@ class RecordingService:
 
 # for access
 class FriendsRepository:
-    ''' example access-control source to use 'personal_inbox' '''
+    '''Example access-control source for personal_inbox'''
 
-    def __init__(self, log_system) -> None:
-        self.log_system = log_system
-        self.access_by_email = {}
-        self.access_file_mtime = None
+    def __init__(self) -> None:
+        self.access_by_email: dict[str, set[str]] = {}
+        self.access_file_mtime: float | None = None
+        self._lock = threading.Lock()
 
-
-    def ensure_friends_file_exists(self, path="friends.xlsx") -> None:
-        ''' Makes a template if no friends.xlsx '''
+    def ensure_friends_file_exists(self, path: str = "friends.xlsx") -> None:
+        '''Create a template friends.xlsx if missing.'''
         if os.path.exists(path):
             return
 
         wb = Workbook()
         ws = wb.active
-        assert ws is not None #to satisfy pylance
+        assert ws is not None
 
-        # headers
         ws["A1"] = "email"
         ws["B1"] = "ping"
         ws["C1"] = "job1"
         ws["D1"] = "job2"
 
-        # rows
         ws["A2"] = "alice@example.com"
         ws["B2"] = "x"
 
@@ -1818,33 +1991,30 @@ class FriendsRepository:
 
         wb.save(path)
         wb.close()
-    
 
-    def load_access_map(self, filepath="friends.xlsx") -> dict:
-        #code written by AI
+
+    def _load_access_file(self, filepath: str) -> dict[str, set[str]]:
         '''
-        Reads friends.xlsx and returns eg.:
+        Reads friends.xlsx and returns for example:
 
         {
             "alice@example.com": {"ping"},
             "ex2@whatever.com": {"ping", "job1"}
         }
-
-        Presumptions:
-        A1 = email
-        row 1 contains job_type
-        'x' gives access
         '''
+        # code written by AI
+
         wb = load_workbook(filepath, data_only=True)
         try:
             ws = wb.active
-            assert ws is not None #to satisfy pylance
+            assert ws is not None
 
             rows = list(ws.iter_rows(values_only=True))
             if len(rows) < 2:
                 raise ValueError("friends.xlsx contains no users")
 
             header = rows[0]
+            self.validate_friends_header(header)
             access_map: dict[str, set[str]] = {}
 
             for row in rows[1:]:
@@ -1856,7 +2026,7 @@ class FriendsRepository:
                 if not email:
                     continue
 
-                permissions = set()
+                permissions: set[str] = set()
 
                 for col in range(1, len(header)):
                     jobname = header[col]
@@ -1879,40 +2049,81 @@ class FriendsRepository:
             wb.close()
 
 
-    def reload_if_modified(self, force_reload=False, filepath="friends.xlsx") -> bool:
-        #code written by AI
-        '''      reload friends.xlsx if changed.       '''
+    def reload_if_modified(self) -> bool:
+        '''Reload friends.xlsx if changed.'''
+        # code written by AI
 
-        if not os.path.exists(filepath):
-            raise FileNotFoundError(f"{filepath} not found")
+        path = "friends.xlsx"
+        self.ensure_friends_file_exists(path)
 
-        current_mtime = os.path.getmtime(filepath)
+        mtime = os.path.getmtime(path)
+        if self.access_file_mtime == mtime:
+            return False
 
-        if (not force_reload) and (self.access_file_mtime == current_mtime):
-            return False   # ingen ändring
+        new_access = self._load_access_file(path)
 
-        new_access = self.load_access_map(filepath)
-
-        self.access_by_email = new_access
-        self.access_file_mtime = current_mtime
+        with self._lock:
+            self.access_by_email = new_access
+            self.access_file_mtime = mtime
 
         return True
 
 
     def is_allowed_sender(self, email_address: str) -> bool:
-
-        email_address = email_address.strip().lower()
-        result = email_address in self.access_by_email
-        self.log_system(f"returning: {result}")
-        return result
-
+        email = email_address.strip().lower()
+        return email in self.access_by_email
 
     def has_job_access(self, email_address: str, job_type: str) -> bool:
-        email_address = email_address.strip().lower()
-        job_type = job_type.strip().lower()
-        result = job_type in self.access_by_email.get(email_address, set())
-        self.log_system(f"returning: {result}")
-        return result
+        email = email_address.strip().lower()
+        job = job_type.strip().lower()
+        return job in self.access_by_email.get(email, set())
+
+    # not implemented
+    def validate_friends_access(self, access_map: dict[str, set[str]]) -> None:
+        if not isinstance(access_map, dict):
+            raise ValueError("access_map must be dict")
+
+        valid_job_types = set(get_args(JobType))
+
+        for email, permissions in access_map.items():
+            if not isinstance(email, str):
+                raise ValueError(f"invalid email key type: {email}")
+
+            email_normalized = email.strip().lower()
+            if not email_normalized:
+                raise ValueError("empty email in access_map")
+
+            if "@" not in email_normalized:
+                raise ValueError(f"invalid email in friends.xlsx: {email}")
+
+            if not isinstance(permissions, set):
+                raise ValueError(f"permissions must be set for {email}")
+
+            invalid_permissions = permissions - valid_job_types
+            if invalid_permissions:
+                raise ValueError(
+                    f"invalid job types for {email}: {sorted(invalid_permissions)}. "
+                    f"Allowed: {sorted(valid_job_types)}"
+                )
+            
+        ## validate headers
+    def validate_friends_header(self, header_row) -> None:
+        if not header_row or str(header_row[0]).strip().lower() != "email":
+            raise ValueError("friends.xlsx column A must be 'email'")
+
+        valid_job_types = set(get_args(JobType))
+
+        for col in range(1, len(header_row)):
+            jobname = header_row[col]
+            if jobname is None:
+                continue
+
+            jobname_str = str(jobname).strip().lower()
+            if jobname_str not in valid_job_types:
+                raise ValueError(
+                    f"invalid job type column in friends.xlsx: {jobname_str}. "
+                    f"Allowed: {sorted(valid_job_types)}"
+                )
 
 # for network check
 class NetworkService:
@@ -1992,7 +2203,7 @@ class AuditRepository:
                         error_message TEXT 
                         )
                         ''')
-        conn.close()
+        #conn.close()
 
 
     def insert_job(self, job_id, email_address=None, email_subject=None, source_ref=None, job_type: JobType | None=None, job_start_date=None, job_start_time=None, job_finish_time=None, job_status: JobStatus | None=None, final_reply_sent=None, job_source_type:JobSourceType | None=None, error_code=None, error_message=None,) -> None:
@@ -2030,7 +2241,7 @@ class AuditRepository:
                 f"INSERT INTO audit_log ({columns}) VALUES ({placeholders})",
                 tuple(fields.values())
             )
-        conn.close()
+        #conn.close()
 
 
     def update_job(self, job_id, email_address=None, email_subject=None, source_ref=None, job_type: JobType | None=None, job_start_date=None, job_start_time=None, job_finish_time=None, job_status: JobStatus | None=None, final_reply_sent=None, job_source_type:JobSourceType | None=None, error_code=None, error_message=None,) -> None:
@@ -2074,7 +2285,7 @@ class AuditRepository:
 
             if cur.rowcount == 0:
                 raise ValueError(f"update_job(): no row in DB with job_id={job_id}")
-        conn.close()
+        #conn.close()
 
 
     
@@ -2093,7 +2304,7 @@ class AuditRepository:
             ''', (today,))
             
             result = cur.fetchone()[0]
-        conn.close()
+        #conn.close()
 
         return result
 
@@ -2114,7 +2325,7 @@ class AuditRepository:
             )
 
             jobs_today = cur.fetchone()[0]
-        conn.close()
+        #conn.close()
 
         self.log_system(f"returning: {jobs_today > 0}", job_id)
 
@@ -2138,7 +2349,7 @@ class AuditRepository:
             )
 
             jobs_today = cur.fetchone()[0]
-        conn.close()
+        #conn.close()
 
         #self.log_system(f"returning {source_ref} is  {jobs_today > 0}")
         return jobs_today > 0
@@ -2155,7 +2366,7 @@ class AuditRepository:
                 LIMIT 1
             ''')
             row = cur.fetchone()
-        conn.close()
+        #conn.close()
 
         return row[0] if row is not None else 0
 
@@ -2172,7 +2383,7 @@ class AuditRepository:
                 ORDER BY job_id DESC
             ''', (days,))
         res = cur.fetchall()
-        conn.close()
+        #conn.close()
         
         return res
 
@@ -2194,7 +2405,7 @@ class AuditRepository:
                 (job_source_type,)
             )
             rows = cur.fetchall()
-        conn.close()
+        #conn.close()
 
         list_of_dicts = [dict(row) for row in rows]
 
@@ -2211,54 +2422,66 @@ class SafeStopController:
         self.audit_repo = audit_repo
         self.generate_job_id = generate_job_id
         self.friends_repo = friends_repo
-        self._safestop_entered = False
+        self._degraded_mode_entered = False
 
 
-    def enter_safestop(self, reason) -> None:
-        ''' safestop breaks the normal state-machine and handover.json logic '''
+    def enter_degraded_mode(self, err_short, err_with_traceback, handover_data) -> None:
+        ''' a mimimal functionality mode until admin adress the issue
         
-        if self._safestop_entered: return # re-entrancy protection
-        self._safestop_entered = True 
+        Rules:
+        * no job intake
+        * scheduled-flow inactiveted
+        * mail-flow inactivated
+        * no handover to RPA tool
+        * 'safestop' status text in UI
+        * recovery commands and functions allowed 
+        * reject-reply to emails from users in friends.xlsx
+        * warning email sent to admin
+        '''
+        
+        if self._degraded_mode_entered: return
+        self._degraded_mode_entered = True
 
-        print("ROBOTRUNTIME CRASHED:\n", reason) 
-
-        try: self.log_system(f"ROBOTRUNTIME CRASHED: {reason}")
-        except Exception: pass
+        message=f"ROBOTRUNTIME CRASHED:\n\n handover_data={handover_data}\n\n {err_with_traceback}"
+        print(message)
+        try: self.log_system(message)
+        except Exception as e: print(f"[safestop] log_system failed: {e}.\n\n{message}")
 
         try: self.recording_service.stop()
-        except Exception: pass
+        except Exception as e: print(f"[safestop] recording_service.stop failed: {e}")
 
-        try: self.send_admin_alert(reason)
-        except Exception: pass
+        try: self.send_admin_alert(err_with_traceback)
+        except Exception as e: print(f"[safestop] send_admin_alert failed: {e}")
 
-        try: self.log_ui("CRASH! All automations halted. Admin is notified.", blank_line_before=True)
-        except Exception: pass
-
-        # follow policy to always reply on personal_inbox
         try:
-            if self.audit_repo.get_pending_reply_jobs(): 
+            self.log_ui("CRASH! All automations halted. Admin is notified.", blank_line_before=True)
+            self.log_ui(f"Reason: {err_short}")
+        except Exception as e: print(f"[safestop] log_ui failed: {e}")
+
+        try:
+            if self.audit_repo.get_pending_reply_jobs():
                 try: self.recovery_answer()
-                except Exception:
+                except Exception as e:
                     try: self.log_system("WARN: at least one user has a pending reply")
-                    except Exception: print("WARN: at least one user has a pending reply")
-        except Exception:
+                    except Exception as e2: print(f"[safestop] recovery_answer + log_system failed: {e} | {e2}")
+        except Exception as e:
             try: self.log_system("WARN: unable to check if users has pending replies")
-            except Exception: print("WARN: unable to check if users has pending replies")
-
-
+            except Exception as e2: print(f"[safestop] pending_reply check + log_system failed: {e} | {e2}")
 
         try: self.ui.tk_set_hide_recording_overlay()
-        except Exception: pass
+        except Exception as e: print(f"[safestop] hide_recording_overlay failed: {e}")
 
         try: self.ui.tk_set_status("safestop")
-        except Exception: # rather kill than allow UI dash freeze
+        except Exception as e:
+            print(f"[safestop] tk_set_status failed: {e}")
             try: self.ui.tk_set_shutdown()
-            except: os._exit(1)
-            
+            except Exception as e2: 
+                print(f"[safestop] tk_set_shutdown failed: {e2}")
+                os._exit(1)
             time.sleep(3)
             os._exit(0)
         
-        self.run_degraded_mode()
+        self.degraded_loop()
 
 
     def recovery_answer(self) -> None:
@@ -2281,8 +2504,9 @@ class SafeStopController:
 
                 recovery_text = (
                     "\n\nThis is a recovery message because the robot was interrupted during processing.\n"
-                    "The information above is based on the audit log.\n"
+                    "According to system, a final reply (DONE/FAIL) to your request was never sent.\n"
                     "This message is sent upon restart, regardless of when or whether the job was completed.\n"
+                    "The robot is now back online.\n"
                     "If the request is still needed, please resend it."
                 )
 
@@ -2299,13 +2523,52 @@ class SafeStopController:
 
                 if job_status == "DONE":
                     extra_subject = "DONE"
-                    extra_body = f"Job completed successfully. Jobid {job_id}." + recovery_text
+                    extra_body = (
+                        f"Job completed successfully.\n"
+                        f"Job ID: {job_id}."
+                        f"{recovery_text}"
+                    )
+
                 elif job_status == "FAIL":
                     extra_subject = "FAIL"
-                    extra_body = f"Job failed after processing. {error_message or ''}" + recovery_text
+                    extra_body = (
+                        f"The job failed during processing.\n"
+                        f"Job ID: {job_id}.\n"
+                        f"System message: {error_message or 'No additional details available.'}"
+                        f"{recovery_text}"
+                    )
+
                 elif job_status == "REJECTED":
                     extra_subject = "FAIL"
-                    extra_body = f"{error_message or 'Your email could not be processed.'}" + recovery_text
+                    extra_body = (
+                    f"Your request was received, but the robot never started.\n"
+                    f"System message: {error_message or 'No additional details available.'}"
+                    f"{recovery_text}"
+                    )
+                        
+
+                elif job_status == "RUNNING":
+                    extra_subject = "FAIL"
+                    extra_body = (
+                    f"An interruption occurred while the robot was processing the job.\n"
+                    f"The job is likely only partially completed.\n"
+                    f"Please verify the result manually in ERP and review the screen recording if available.\n"
+                    f"System message: {error_message or 'No additional details available.'}"
+                    f"{recovery_text}"
+                    )
+
+                
+                elif job_status == "VERIFYING":
+                    extra_subject = "FAIL"
+                    extra_body = f"Your job is processed, but the result could not be verified.\nIt's not a certain FAIL, but you should verify the result manually.\nsystem message: {error_message}" + recovery_text
+                    extra_body = (
+                    f"The job reached the verification stage, but the result could not be verified.\n"
+                    f"The requested action may already have been completed, but you need to manually check the result.\n"
+                    f"System message: {error_message or 'No additional details available.'}"
+                    f"{recovery_text}"
+                    )
+
+
                 else:
                     self.log_system(f"recovery skipped: unexpected job_status={job_status}", job_id)
                     continue
@@ -2328,9 +2591,9 @@ class SafeStopController:
                 self.log_system(f"recovery reply failed: {err}", job_id)
 
 
-    def run_degraded_mode(self, restartflag="restart.flag") -> Never:
-        ''' emergency mode to reply end-user emails in 'personal_inbox' and wait for restart. '''
-        
+    def degraded_loop(self, restartflag="restart.flag") -> Never:
+        ''' run a defensive code to support remote restart '''
+  
         try: self.log_system("running")
         except Exception: pass
         
@@ -2343,7 +2606,7 @@ class SafeStopController:
                     try: os.remove(restartflag)
                     except Exception: pass
                     try: self.log_system(f"restart-command received from {restartflag}")
-                    except Exception: pass
+                    except Exception as err: print(f"log_system not working: {err}")
                     self.restart_application()
                 
                 # reject all mail to 'personal_inbox', and check for system command
@@ -2352,25 +2615,29 @@ class SafeStopController:
                     continue
                 
                 inbox_path = paths[0]
-                
                 mail = self.mail_backend_personal.parse_mail_file(inbox_path)
                 del inbox_path
                 
                 mail = self.mail_backend_personal.claim_to_processing(mail)
-                self.log_ui(f"email from {mail.sender_email}", blank_line_before=True)
+                try: self.log_ui(f"email from {mail.sender_email}", blank_line_before=True)
+                except Exception: pass
 
+                # silent delete non friends
                 if not self.friends_repo.is_allowed_sender(mail.sender_email):
                     self.log_ui("--> rejected (not in friends.xlsx)")
                     self.mail_backend_personal.delete_from_processing(mail)
                     continue
-   
+                
+                # check for restart email
                 if "restart1234" in mail.subject.strip().lower():
                     try: self.log_system(f"restart command received from {mail.sender_email}")
                     except Exception: pass
                     try: self.mail_backend_personal.reply_and_delete(mail, extra_subject="got it!", extra_body="Reboot command received")
                     except Exception: pass
                     self.restart_application()
-                
+
+
+                # check for stop email
                 elif "stop1234" in mail.subject.strip().lower():
                     try: self.log_system(f"stop command received from {mail.sender_email}")
                     except Exception: pass
@@ -2380,13 +2647,15 @@ class SafeStopController:
                     except Exception: os._exit(1)
                     os._exit(0)
 
-                
-                try: self.mail_backend_personal.reply_and_delete(mail, extra_subject="FAIL", extra_body="Robot is out-of-service. Your email was deleted.")
+                # reply, audit-log and delete for friends
+                try: self.mail_backend_personal.reply_and_delete(
+                    mail, extra_subject="FAIL",
+                    extra_body="Robot is out-of-service. Your email was deleted.")
                 except Exception: pass
                 try:
                     job_id = self.generate_job_id()
                     now = datetime.datetime.now()
-                    job_source_type: JobSourceType = "personal_inbox" # typed 
+                    job_source_type: JobSourceType = "personal_inbox" 
                     
                     self.audit_repo.insert_job(
                         job_id=job_id,
@@ -2402,27 +2671,61 @@ class SafeStopController:
                 try: self.log_ui("--> rejected (safestop)")
                 except Exception: pass
             
-            except Exception as err:
-                try: self.log_system(f"err: {err}")
-                except Exception: pass
+            except Exception as e1:
+                try: self.log_system(f"err: {e1}")
+                except Exception as e2: print(f"(log unavailable: {e2}) err: {e1}")
 
 
     def restart_application(self) -> Never:
-        # this really works on UI dash freeze?
+        # written by AI
+        try:
+            self.log_system("restarting application in new visible terminal")
+        except Exception:
+            pass
+
         try:
             self.ui.tk_set_shutdown()
         except Exception:
             pass
 
         try:
-            subprocess.Popen(
-                [sys.executable, *sys.argv],
-                start_new_session=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                close_fds=True,
-            )
-        except Exception:
+            if platform.system() == "Windows":
+                # Open a new visible PowerShell window and run the same script
+                subprocess.Popen([
+                    "powershell",
+                    "-NoExit",
+                    "-Command",
+                    f'& "{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
+                ])
+
+            else:
+                # Linux: open a new terminal window and run the same script
+                python_cmd = f'"{sys.executable}" "{os.path.abspath(sys.argv[0])}"'
+
+                terminal_candidates = [
+                    ["gnome-terminal", "--", "bash", "-lc", f"{python_cmd}; exec bash"],
+                    ["xfce4-terminal", "--hold", "-e", python_cmd],
+                    ["konsole", "-e", "bash", "-lc", f"{python_cmd}; exec bash"],
+                    ["xterm", "-hold", "-e", python_cmd],
+                ]
+
+                launched = False
+                for cmd in terminal_candidates:
+                    try:
+                        subprocess.Popen(cmd)
+                        launched = True
+                        break
+                    except FileNotFoundError:
+                        continue
+
+                if not launched:
+                    raise RuntimeError("No supported terminal emulator found for restart")
+
+        except Exception as err:
+            try:
+                self.log_system(f"restart failed: {err}")
+            except Exception:
+                pass
             os._exit(1)
 
         time.sleep(3)
@@ -2433,7 +2736,7 @@ class SafeStopController:
         mail=JobCandidate(
             source_ref="safestop, no real source_ref",
             sender_email="example_admin@company.com",
-            subject="safestop entered",
+            subject="safestop",
             body=f"Reason: {reason}",
             job_source_type="personal_inbox", #?
             source_data={},
@@ -2768,34 +3071,38 @@ class RobotRuntime:
     def __init__(self, ui):
 
         self.in_dev_mode = True
+        self.prev_ui_status = None
 
         self.ui = ui
-        self.handover_repo = HandoverRepository(self.log_system)  #nu äger Runtime en handover_repo (som får med append-metod)
-        self.friends_repo = FriendsRepository(self.log_system)
+        self.handover_repo = HandoverRepository(self.log_system)
+        self.friends_repo = FriendsRepository()
         self.audit_repo = AuditRepository(self.log_system)
         self.network_service = NetworkService(self.log_system)
         self.recording_service = RecordingService(self.log_system)
-        self.safestop_controller = SafeStopController(self.log_system, self.log_ui, self.recording_service, ui, ExampleMailBackend(self.log_system, "personal_inbox"), self.audit_repo, self.generate_job_id, self.friends_repo) 
         self.job_handlers = {
             "ping": ExamplePingJobHandler(self.log_system),
             "job1": ExampleJob1Handler(self.log_system), 
             "job2": ExampleJob2Handler(self.log_system), 
-            "job3": ExampleJob3Handler(self.log_system),}
+            "job3": ExampleJob3Handler(self.log_system),
+            }
     
-        self.pre_handover_executor = PreHandoverExecutor(log_system=self.log_system, log_ui=self.log_ui, update_ui_status=self.update_ui_status, ui_dot_tk_set_show_recording_overlay=self.ui.tk_set_show_recording_overlay, generate_job_id=self.generate_job_id, recording_service=self.recording_service, audit_repo=self.audit_repo, in_dev_mode=self.in_dev_mode)
-        self.scheduled_flow = ScheduledFlow(log_system=self.log_system, log_ui=self.log_ui, audit_repo=self.audit_repo, job_handlers=self.job_handlers, in_dev_mode=self.in_dev_mode, pre_handover_executor=self.pre_handover_executor)
+        self.pre_handover_executor = PreHandoverExecutor(self.log_system, self.log_ui, self.update_ui_status, self.ui.tk_set_show_recording_overlay, self.generate_job_id, self.recording_service, self.audit_repo, self.in_dev_mode)
         self.mail_flow = MailFlow(self.log_system, self.log_ui, self.friends_repo, self.is_within_operating_hours, self.network_service, self.job_handlers, self.pre_handover_executor)
-        self.post_handover_finalizer = PostHandoverFinalizer(self.log_system, self.log_ui, self.audit_repo, self.job_handlers, self.recording_service, self.ui.tk_set_hide_recording_overlay, self.refresh_jobs_done_today_display, self.in_dev_mode)
+        self.scheduled_flow = ScheduledFlow(self.log_system, self.log_ui, self.audit_repo, self.job_handlers, self.in_dev_mode, self.pre_handover_executor)
+        self.post_handover_finalizer = PostHandoverFinalizer(self.log_system, self.log_ui, self.audit_repo, self.job_handlers, self.recording_service, self.ui.tk_set_hide_recording_overlay, self.in_dev_mode, ExampleMailBackend(self.log_system, "personal_inbox"), ExampleMailBackend(self.log_system, "shared_inbox"))
+        self.safestop_controller = SafeStopController(self.log_system, self.log_ui, self.recording_service, ui, ExampleMailBackend(self.log_system, "personal_inbox"), self.audit_repo, self.generate_job_id, self.friends_repo) 
 
+        
         
     def initialize_runtime(self):
         
         VERSION = 0.4
-        self.log_system(f"RuntimeThread started, version={VERSION}")
-
+        self.log_system(f"RuntimeThread started, version={VERSION}, pid={os.getpid()}")
+        
+        # policy to not resume / cold start
         self.handover_repo.write(ActiveJob(
             ipc_state="idle"
-            )) # no-resume policy, always cold start
+            )) 
 
         # cleanup
         for fn in ["stop.flag", "restart.flag"]:
@@ -2804,13 +3111,13 @@ class RobotRuntime:
 
         self.network_service.has_network_access()
 
-        atexit.register(self.recording_service.stop) #extra protection during normal python exit
-        self.recording_service.stop() #stop any remaing recordings
+        # extra protection with the external ffmpeg recordning process
+        atexit.register(self.recording_service.stop) # during normal exit
+        self.recording_service.stop() # stop any remaning since last session
         self.recording_service.cleanup_aborted_recordings()
 
         self.friends_repo.ensure_friends_file_exists()
-
-        self.friends_repo.reload_if_modified(force_reload=True)
+        self.friends_repo.reload_if_modified()
 
         self.audit_repo.ensure_db_exists()
 
@@ -2822,75 +3129,83 @@ class RobotRuntime:
 
 
     def run(self) -> None:
-        self.initialize_runtime()
+        handover_data={}
+        
+        try:          
+            self.initialize_runtime()
 
-        self.prev_ui_status = None
-        prev_ipc_state = None
-        watchdog_started_at = None
-        watchdog_timeout = 600 #600 for 10 min
-        if self.in_dev_mode: watchdog_timeout = 10
+            prev_ipc_state = None
+            watchdog_started_at = None
+            watchdog_timeout = 10 if self.in_dev_mode else 600 # in seconds
+            poll_interval = 1   # inverval (seconds) for each cycle    
 
-        poll_interval = 1   # inverval for each cycle    
-
-        while True:
-            try:
-                
+            while True:                
                 handover_data = self.handover_repo.read()
-                ipc_state = handover_data.get("ipc_state")
+                ipc_state = handover_data.ipc_state
+                job_id = handover_data.job_id
                 
-                #dispatch
-                if ipc_state == "idle":             # Orchestrator owns workflow on "idle"
+                # dispatch
+                if ipc_state == "idle":             # Orchestrator owns the workflow
                     self.check_for_jobs()
-                    time.sleep(poll_interval)
 
-                elif ipc_state == "job_queued":     # signal to RPA tool (from Orchestrator) to take workflow
-                    time.sleep(poll_interval)
+                elif ipc_state == "job_queued":     # RPA tool owns the workflow
+                    pass
 
-                elif ipc_state == "job_running":    # signal from RPA tool that workflow is taken
-                    time.sleep(poll_interval)
+                elif ipc_state == "job_running":    # RPA tool owns the workflow
+                    pass
 
-                elif ipc_state == "job_verifying":  # signal to orchestrator (from RPA tool) to re-take workflow
+                elif ipc_state == "job_verifying":  # Orchestrator owns the workflow
                     self.finalize_current_job(handover_data)
 
-                elif ipc_state == "safestop":       # signal to orchestrator (from RPA tool) to crash due to an error 
-                    raise RuntimeError(f"crash signal received from RPA tool for job_id: {handover_data.get('job_id')}")
+                elif ipc_state == "safestop":       # Orchestrator owns the workflow
+                    raise RuntimeError(f"safestop signal (from RPA tool) for job_id: {job_id}")
                     
 
-                # log all ipc_state transitions
+                # track ipc_state transitions
                 if ipc_state != prev_ipc_state:
-                    self.update_ui_status(ipc_state)
-                    self.log_system(f"state transition detected by CPU-poll: {prev_ipc_state} -> {ipc_state}")
-                    print(f"state transition detected by CPU-poll: {prev_ipc_state} -> {ipc_state}")
+                    transition_message=f"state transition detected by CPU-poll: {prev_ipc_state} -> {ipc_state}"
 
-                    # note handover time or last RPA tool activity
+                    if not self.handover_repo.is_valid_ipc_transition(prev_ipc_state, ipc_state) and not self.in_dev_mode:
+                        raise RuntimeError(f"invalid {transition_message}")
+
+                    self.update_ui_status(ipc_state)
+                    self.log_system(transition_message, job_id)
+                    print(transition_message)
+
+                    # note handover time or last RPA tool state transition
                     if ipc_state in ("job_queued", "job_running"):
                         watchdog_started_at = time.time()
                     else:
                         watchdog_started_at = None
                    
-                    # update DB when/if RPA tool starts the job
+                    # update job_audit.db when/if RPA tool accepts the job
                     if ipc_state == "job_running":
-                        self.audit_repo.update_job(job_id=handover_data.get("job_id"), job_status="RUNNING")
+                        self.audit_repo.update_job(job_id=job_id, job_status="RUNNING")
                     
 
-                # initiate crash if RPA tool takes too long (to start or finish)
+                # raise error if RPA tool takes too long (to start or finish)
                 if watchdog_started_at and ipc_state in ("job_queued", "job_running") and time.time() - watchdog_started_at > watchdog_timeout:
+                    error_message=f"No progress for {watchdog_timeout} seconds"
+                    
                     self.audit_repo.update_job(
-                        job_id=handover_data.get("job_id"),
+                        job_id=job_id,
                         job_status="FAIL",
                         error_code="TIMEOUT",
-                        error_message="No progress for 10 minutes",
+                        error_message=error_message,
                     )
-                    watchdog_started_at = None
-                    raise RuntimeError(f"job_id {handover_data.get('job_id')} crashed: no lifesign from RPA tool for {watchdog_timeout/60} minutes") #safe-stop policy
+                    raise RuntimeError(error_message)
                 
                 prev_ipc_state = ipc_state
+                time.sleep(poll_interval)
 
 
-            except Exception:  # safe-stop policy on crash
-                err = traceback.format_exc()
-                #self.handover_repo.write(ActiveJob( ipc_state="safestop") )
-                self.safestop_controller.enter_safestop(reason=err) 
+        except Exception as err_short:  # policy to safe-stop on errors
+            err_with_traceback = traceback.format_exc()
+
+            try: self.handover_repo.write(ActiveJob(ipc_state="safestop")) 
+            except Exception: print("failed to set ipc_state to 'safestop' (not mandatory)")
+
+            self.safestop_controller.enter_degraded_mode(err_short, err_with_traceback, handover_data) 
 
 
 
@@ -2934,12 +3249,13 @@ class RobotRuntime:
     def log_ui(self, text:str, blank_line_before: bool = False) -> None:
         
         self.ui.tk_set_log(text, blank_line_before)
-        
+
 
     def log_system(self, event_text: str, job_id=None, file="system.log"):
 
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
+        #extra = {"job_id": job_id or "-"}
         # get caller function name
         try:
             frame = sys._getframe(1)
@@ -2953,9 +3269,8 @@ class RobotRuntime:
 
         except Exception:
             caller = "unknown_caller()"
-
-        job_part = f" | JOB {job_id}" if job_id else ""
-        log_line = f"{timestamp}{job_part} | {caller} | {event_text}"
+      
+        log_line = f"{timestamp} | py  | job_id={job_id or ''} | {caller} | {event_text}"
 
         # normalize to single-line log
         log_line = " ".join(str(log_line).split())
@@ -3001,12 +3316,10 @@ class RobotRuntime:
     def generate_job_id(self) -> int:
         ''' unique id for all jobs '''
 
-        job_id = int(datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
-        
-        # simple busy-wait
-        while self.audit_repo.get_latest_job_id() >= job_id:
-            time.sleep(1)
-            job_id = int(datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
+        candidate_job_id = int(datetime.datetime.now().strftime("%Y%m%d%H%M%S"))
+
+        last_jobid = self.audit_repo.get_latest_job_id()
+        job_id = max(candidate_job_id, last_jobid + 1)
 
         self.log_system(f"assigned job_id", job_id)
         return job_id
@@ -3021,9 +3334,11 @@ class RobotRuntime:
         return result
         
 
-    def finalize_current_job(self, handover_data) -> None:
+    def finalize_current_job(self, handover_data: ActiveJob) -> None:
         
         self.post_handover_finalizer.poll_once(handover_data)
+
+        self.refresh_jobs_done_today_display()
 
         self.handover_repo.write(ActiveJob(
             ipc_state="idle",
@@ -3048,8 +3363,8 @@ class RobotRuntime:
                 try: self.ui.tk_set_shutdown() #request soft-exit
                 except Exception: os._exit(1)
                 
-                time.sleep(1)
-                os._exit(0)  #kill if still alive after 1 sec 
+                time.sleep(3)
+                os._exit(0)  #kill if still alive after 3 sec 
 
 def main() -> None:
     #run dashboard in main thred and 'the rest' in async worker
