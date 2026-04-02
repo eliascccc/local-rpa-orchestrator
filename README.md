@@ -5,7 +5,9 @@ A lightweight orchestrator that keeps logic in Python — and uses RPA tools onl
 ---
 
 ## Overview
-This project follows a principle: **automation logic belongs in Python — UI execution belongs in RPA tools.**
+This project follows a principle:
+
+**automation logic belongs in Python — UI execution belongs in RPA tools.**
 
 It is designed as a smaller alternative to enterprise orchestrators,
 focusing on clarity, ease of modification, and running on a single machine.
