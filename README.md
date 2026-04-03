@@ -5,9 +5,9 @@ A lightweight orchestrator that keeps logic in Python — and uses RPA tools onl
 ---
 
 ## Overview
-This project follows a principle:
 
-**automation logic belongs in Python — UI execution belongs in RPA tools.**
+The goal is a simple way to introduce RPA in a team.
+It follows the principle: **automation logic belongs in Python — UI execution belongs in RPA tools.**
 
 It is designed as a smaller alternative to enterprise orchestrators,
 focusing on clarity, ease of modification, and running on a single machine.
@@ -16,9 +16,8 @@ It does NOT replace RPA tools.
 
 Instead, it orchestrates them:
 you still need a real RPA tool (Power Automate, UiPath Studio, Blue Prism, etc.)
-to perform screen-based automation. Think of this as the control around the RPA — not the robot itself.
+to perform screen-based automation. Think of this as the shell around the RPA, not the robot itself.
 
----
 ## Responsibilities
 
 | Step | Orchestrator (this project) | RPA tool |
@@ -33,7 +32,7 @@ to perform screen-based automation. Think of this as the control around the RPA 
 ---
 
 ## Example dashboard
-<img width="1209" height="635" alt="example_dash" src="https://github.com/user-attachments/assets/dc12a84b-c329-4b91-b402-387128197f9a" />
+<img width="1209" height="635" alt="image" src="https://github.com/user-attachments/assets/5f16b39f-99b3-4c82-ad91-0b3092f3b516" />
 
 ---
 
@@ -41,10 +40,10 @@ to perform screen-based automation. Think of this as the control around the RPA 
 
 The orchestrator supports two types of job sources: emails and queries.
 
-#### Email-driven job
+#### Email-driven
 A user sends an email → Python validates and prepares the job → writes to `handover.json` → RPA executes UI actions → Python verifies and responds.
 
-#### Query-driven job
+#### Query-driven
 Python polls a data source → detects a valid case → prepares payload → signals RPA → RPA executes → Python verifies the outcome.
 
 
@@ -105,7 +104,7 @@ The diagram shows how:
 
 * Email-driven job processing (personal inbox)
 * Shared inbox support (partially implemented)
-* Data-driven jobs (ERP/data queries)
+* Query-driven jobs (ERP/data polling)
 * File-based IPC (`handover.json`)
 * SQLite audit-style logging (`job_audit.db`)
 * Crash-safe mode (`safestop`)
@@ -223,7 +222,7 @@ This project intentionally avoids that scope and runs on a single machine with s
 
 Workflow tools (e.g. Airflow, Prefect) are built for:
 
-* Scheduled pipelines
+* Scheduled and data pipelines
 * Data engineering workflows
 * Distributed task execution
 
