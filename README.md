@@ -92,11 +92,32 @@ These tools perform the actual UI interactions (clicks, keyboard input, screen a
 The diagram shows how:
 
 * The Orchestrator and the RPA tool run independently
-* Both operate in their own loops
 * State is synchronized via `handover.json`
 * Failures transition the system into a safestop
-* Safestop is an emergency mode that breaks the loop
 * Your RPA tool must follow this model
+
+---
+
+## Two distinct email channels
+
+#### 1. Personal inbox (command channel)
+
+This is a direct communication channel to the robot.
+
+* Users explicitly send requests to the robot (e.g. rpa@company.com)
+* The robot may reply to the sender
+* Access control is enforced (e.g. via friends.xlsx)
+* This behaves like a command interface
+
+#### 2. Shared inbox (operational channel)
+
+This is a passive monitoring channel.
+
+* The robot listens to an existing business inbox (e.g. orders@company.com)
+* Senders are typically external and unaware of the robot
+* The robot must never reply
+* The robot only processes emails that match a defined scope
+* All other emails are ignored or returned to the inbox
 
 ---
 
@@ -119,19 +140,6 @@ The diagram shows how:
 
 ---
 
-## Email driven jobs (personal inbox)
-
-* Access controlled via `friends.xlsx`
-* Only allowed users can trigger jobs
-* Job permissions defined per user
-* Unknown senders → silently deleted
-* Automatic replies:
-
-  * `DONE`
-  * `FAIL`
-  * "online lifesign" (once per day)
-
----
 
 
 ## Running the Project
