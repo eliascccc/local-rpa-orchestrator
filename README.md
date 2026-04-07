@@ -1,16 +1,18 @@
 # Robot Runtime
 
-A python runtime for small scale RPA
+A small Python runtime for email- and query-driven RPA
 
 ---
 
 ## Overview
 
-'Runtime' is this text refers to the input layer, local orchestration and decision logic part of an RPA deployment. (this project is just the Runtime part), You also need an rpa tool (power automate, uipath studio)
-to do the UI autmations. The Runtime and the RPA tool together forms 'the robot'.
-This project is useful for getting started with automating tasks in a business unit. it runs on a single machine with one single file.
-this principle is: screenclicks -> done by the RPA tool. The rest (job intake, orchestration and logic) -> this python project
+Robot Runtime is a local Python runtime for small-scale RPA deployments.
+'Runtime' is this text refers to job intake, local orchestration, decision logic, logging, and result verification.
+The final part, UI automation, is delegated to an external RPA tool such as Power Automate or UiPath Studio.
+Together, the Runtime and the RPA tool form the robot.
 
+This project is useful for getting started with automating tasks in a business unit. It runs on a single machine with one single file.
+The principle is: **Python owns the logic. The RPA tool owns the screen**
 
 ---
 
@@ -38,8 +40,6 @@ This project separates responsibilities between the Orchestrator and the RPA too
 * The **Runtime (this project)** handles:
   - how jobs enter the system (e.g. via email)
   - how jobs are discovered autonomously (e.g. queries)
-  - access control and validation
-  - job state tracking and audit logging
   - preparing payloads and handover to an RPA tool
   - verifying results after execution
   - handling failures
@@ -76,8 +76,8 @@ The diagram shows:
 * Final user replies after verification (DONE / FAIL)
 * Screen-recording link included in final reply
 * Runs without administrator rights
-* Cross-platform (Windows and Linux)
 * Single-file runtime (`main.py`) for easy sharing and inspection
+* Windows or Linux, with environment-specific setup
 
 ---
 
@@ -120,29 +120,6 @@ Use included dev tools:
 * Cheap “extra laptop” deployment
 * Pilot / proof-of-concept automation
 
-
-
-
-
-
-
-
-## What this project is not
-
-You still need a real RPA tool to execute UI automation steps.
-
-This includes tools such as:
-
-* Microsoft Power Automate
-* UiPath Studio
-* Blue Prism
-* [Robot Framework](https://github.com/robotframework/robotframework)
-* [TagUI](https://github.com/aisingapore/TagUI)
-* [RPA for Python](https://github.com/tebelorg/RPA-Python)
-
-These tools perform the actual UI interactions (clicks, keyboard input, screen automation).
-
-
 ---
 ## Why not just use X?
 
@@ -155,7 +132,7 @@ You can — but it tends to lead to:
 * Fragile automations that break on small UI changes
 
 In this project the RPA tool is used for what it does best: UI interactions (clicks, keyboard input, screen automation).
-This tools include Microsoft Power Automate, UiPath Studio, Blue Prism, [Robot Framework](https://github.com/robotframework/robotframework), [TagUI](https://github.com/aisingapore/TagUI), [RPA for Python](https://github.com/tebelorg/RPA-Python)
+These tools include Microsoft Power Automate, UiPath Studio, Blue Prism, [Robot Framework](https://github.com/robotframework/robotframework), [TagUI](https://github.com/aisingapore/TagUI), [RPA for Python](https://github.com/tebelorg/RPA-Python)
 
 ---
 
@@ -172,7 +149,7 @@ This project capitalize on the simplicity and large resources avaliable for Pyth
 
 #### Why not use an enterprise orchestrator?
 
-Enterprise orchestrators (e.g. UiPath Orchestrator, Control Room, [orchestrator_rpa](https://github.com/daferferso/orchestrator_rpa), [orchestrator_rpa](https://github.com/daferferso/orchestrator_rpa), [openorchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator), robotframework() 
+Enterprise orchestrators (e.g. UiPath Orchestrator, Control Room, [orchestrator_rpa](https://github.com/daferferso/orchestrator_rpa), [orchestrator_rpa](https://github.com/daferferso/orchestrator_rpa), [openorchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator)
 
 * Require infrastructure, setup, and licensing
 * Are designed for large-scale, multi-bot environments
@@ -182,23 +159,12 @@ If you need distributed execution, queues, or centralized control — this proje
 
 ---
 
-#### Why not use a workflow orchestrator? (delete this?)
+## Deployment requirements
 
-Workflow tools (e.g. Airflow, Prefect) are built for:
-
-* Scheduled and data pipelines
-* Data engineering workflows
-* Distributed task execution
-
-This project is much smaller, local-first, and designed around business-triggered jobs (email, ERP signals) plus screen-based RPA
-
----
-## Deployment require
-
-- extra laptop
-- a new inbox such as rpa@yourcompany.com
-- an RPA tool
-- runtime setup (mail & ERP backend, do jobhandlers, select screen-recording destination folder, set operating hours and network health check path)
+- a dedicated machine or “extra laptop”
+- a mailbox such as rpa@yourcompany.com
+- an external RPA tool
+- environment-specific setup for mail backend, ERP/query backend, job handlers, recording path, operating hours, and network health check
 
 ---
 
