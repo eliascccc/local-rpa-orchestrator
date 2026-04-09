@@ -16,7 +16,7 @@ This project is designed as a simple way to get started with RPA in a business u
 The principle is: **UI interaction → handled by the RPA tool. The rest (logic and orchestration) → this Python runtime**
 
 Unlike traditional RPA setups — where users manually trigger predefined automations —
-this runtime is event-driven. It continuously listens for incoming work (emails or data conditions),
+this runtime is event-driven. It continuously listens for incoming work (emails or queries),
 interprets the request, decides what action to take, and executes via an RPA tool.
 
 ---
