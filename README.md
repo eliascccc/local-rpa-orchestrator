@@ -8,7 +8,7 @@ A local runtime for email- and query-driven RPA — where Python owns the logic 
 
 Robot Runtime is a local Python runtime for small-scale RPA deployments.
 The term “runtime” refers to everything except the UI automation:
-job intake, orchestration, decision logic, logging, and result verification.
+job intake, orchestration, decision logic, and result verification.
 UI automation is delegated to an external RPA tool such as UiPath or Power Automate.
 Together, the runtime and the RPA tool form the robot.
 
@@ -16,8 +16,7 @@ This project is designed as a simple way to get started with RPA in a business u
 The principle is: **UI interaction → handled by the RPA tool. The rest (logic and orchestration) → this Python runtime**
 
 Unlike traditional RPA setups — where users manually trigger predefined automations —
-this runtime is event-driven. It continuously listens for incoming work (emails or queries),
-interprets the request, decides what action to take, and executes via an RPA tool.
+this runtime is event-driven. It continuously listens for incoming work (emails or queries), decides what to do, and executes via an RPA tool.
 
 ---
 
@@ -26,7 +25,7 @@ interprets the request, decides what action to take, and executes via an RPA too
 
 ---
 
-## Job source examples
+## Job intake examples
 
 The runtime supports two types of job sources: emails and queries.
 
@@ -38,27 +37,21 @@ Python polls a data source → detects a valid case → prepares a payload → s
 
 ---
 
-## Key idea
+## Intended Use Case
 
-This project separates responsibilities between the runtime and the RPA tool:
-
-* The **runtime (this project)** handles:
-  - job intake (email / queries)
-  - access control and validation
-  - decision logic
-  - preparing payloads and handover
-  - verification and failure handling
-
-* The **RPA tool** handles:
-  - UI automation (clicks, keyboard input, ERP interaction)
-
-They communicate through a file-based IPC mechanism (`handover.json`).
+* Small internal automation (5–10 users)
+* No dedicated RPA infrastructure
+* No admin rights required
+* Cheap “extra laptop” deployment
+* Pilot / proof-of-concept automation
 
 ---
 
+
+
 ## Architecture
 
-<img width="1140" height="1709" alt="workflow" src="https://github.com/user-attachments/assets/182ecc0a-1073-493c-bc6f-885878212db2" />
+<img width="1140" height="1709" alt="workflow" src="https://github.com/user-attachments/assets/0e0950c7-cc59-40ca-9fb0-3e989c862a62" />
 
 The diagram shows:
 
@@ -110,17 +103,15 @@ Use included dev tools:
 
 ---
 
+## Deployment requirements
 
-
-## Intended Use Case
-
-* Small internal automation (5–10 users)
-* No dedicated RPA infrastructure
-* No admin rights required
-* Cheap “extra laptop” deployment
-* Pilot / proof-of-concept automation
+- a dedicated machine or “extra laptop”
+- a mailbox such as rpa@yourcompany.com
+- an external RPA tool
+- environment-specific setup for mail backend, ERP/query backend, job handlers, recording path, operating hours, and network health check
 
 ---
+
 ## Why not just use X?
 
 #### Why not just use RPA for everything?
@@ -150,7 +141,7 @@ while relying on RPA tools for reliable UI automation.
 
 #### Why not use an enterprise orchestrator?
 
-Enterprise orchestrators (e.g. UiPath Orchestrator, Control Room, [orchestrator_rpa](https://github.com/daferferso/orchestrator_rpa), [openorchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator)
+Enterprise orchestrators (e.g. UiPath Orchestrator, Control Room, [orchestrator_rpa](https://github.com/daferferso/orchestrator_rpa), [openorchestrator](https://github.com/itk-dev-rpa/OpenOrchestrator))
 
 * Require infrastructure, setup, and licensing
 * Are designed for large-scale, multi-bot environments
@@ -160,18 +151,9 @@ If you need distributed execution, queues, or centralized control — this proje
 
 ---
 
-## Deployment requirements
-
-- a dedicated machine or “extra laptop”
-- a mailbox such as rpa@yourcompany.com
-- an external RPA tool
-- environment-specific setup for mail backend, ERP/query backend, job handlers, recording path, operating hours, and network health check
-
----
-
 ## License
 
-MIT (recommended)
+MIT
 
 ---
 
