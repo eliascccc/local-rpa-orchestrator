@@ -2637,31 +2637,31 @@ class SafeStopController:
 
         job_id = fault.job_id
         active_job = fault.active_job
-        error_code = fault.error_code
         error_message = fault.error_message
 
-        if active_job is None or active_job.ipc_state == "idle":
-            err_with_traceback_ext = f"ROBOTRUNTIME CRASHED:\n\nfault={fault}\n\n{fault.traceback_text}"
+        err_with_traceback_ext = f"RobotRuntime crashed:\n\nfault={fault}\n\n{fault.traceback_text}"
         
-        else:
-            err_with_traceback_ext = (
-            f"ROBOTRUNTIME CRASHED:\n\n fault={fault}\n\njob_type={active_job.job_type} with rpatool_payload {active_job.rpatool_payload}\n\n {fault.traceback_text}"
-        )
-            
+        if active_job is not None and active_job.ipc_state != "idle":
+            err_with_traceback_ext += (
+                f"\n\n while wokring on job_type={active_job.job_type} "
+                f"with rpatool_payload=\n{active_job.rpatool_payload}"
+            )
+
             # stop RPA_tool from possibly claiming the workflow. Intentionally not using handover_repo in degraded mode
             if active_job.ipc_state == "job_queued":
                 try:
                     active_job.ipc_state="safestop"
                     handover_data = asdict(active_job)
-                    with open("handover.json", "w", encoding="utf-8") as f:
+
+                    with open("handover.json.tmp", "w", encoding="utf-8") as f:
                         json.dump(handover_data, f, indent=2)
-                        f.flush()
+
+                    os.replace("handover.json.tmp", "handover.json")
+    
                 except Exception:
-                    try: os.remove("handover.json")
+                    try: os.remove("handover.json") # remove file on faliure
                     except Exception as e: self.logger.system(e)
-                
-        
-        print(err_with_traceback_ext)     
+           
         self.logger.system(err_with_traceback_ext, job_id)
 
         try: self.recording_service.stop()
