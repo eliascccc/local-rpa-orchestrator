@@ -99,11 +99,12 @@ class RPAToolSimulator:
                         # simulation of job1 screenactiviy
                         self.log_system("activities on screen_1 in ERP completed", job_id)
                         self.log_system("activities on screen_2 in ERP completed", job_id)
-                        self.simulate_rpa_result_job1(erp_order_number, new_qty)
+                        
+                        # in this demo the job-specific data for job1 is not used
+                        del erp_order_number, new_qty
 
                         new_state = "job_verifying"
                         
-
                     # JOB3
                     elif job_type == "job3":
                         erp_order_number = rpatool_payload.get("source_ref")
@@ -111,8 +112,13 @@ class RPAToolSimulator:
 
                         self.log_system("activities on screen_1 in ERP completed", job_id)
                         self.log_system("activities on screen_2 in ERP completed", job_id)
-                        self.simulate_rpa_result_job1(erp_order_number, new_qty) # use job1 example         
+                        self.simulate_rpa_result_job3(erp_order_number, new_qty)       
 
+                        new_state = "job_verifying"
+                    
+                    # JOB4
+                    elif job_type == "job4":
+                        # placeholder for implementation
                         new_state = "job_verifying"
 
                     # PING
@@ -136,10 +142,7 @@ class RPAToolSimulator:
                     with open("handover.json", "w", encoding="utf-8") as f:
                         json.dump(handover_data, f, indent=2)
 
-                    self.log_system(
-                        f"RPAToolSimulator done, state job_running -> {new_state}",
-                        job_id,
-                    )
+                    self.log_system(f"workflow completed, state job_running -> {new_state}", job_id)
 
                 except Exception as e:
                     self.log_system(f"crash in loop: {e}")
@@ -169,7 +172,7 @@ class RPAToolSimulator:
             except Exception as e:
                 print(f"Command loop error: {e}")
 
-    def simulate_rpa_result_job1(self, erp_order_number: str, new_qty: int, path="Example_ERP_table.xlsx"):
+    def simulate_rpa_result_job3(self, erp_order_number: str, new_qty: int, path="Example_ERP_table.xlsx"):
         assert erp_order_number is not None
         assert new_qty is not None
 
