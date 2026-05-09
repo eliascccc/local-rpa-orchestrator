@@ -4,12 +4,12 @@ Robot Runtime is a local Python runtime for email- and query-driven RPA.
 It handles job intake, orchestration, business logic, and result verification, while delegating UI automation to an external RPA tool such as UiPath Studio or Power Automate.
 Together, this runtime and the RPA tool form the robot.
 
-Designed for small 'extra-laptop' deployments without prior infrastructure.
-
-The principle is: **UI interaction** is handled by the RPA tool. **Everything else (logic and orchestration)** is handled by this Python runtime.
+It is designed for small 'extra-laptop' deployments without prior infrastructure.
 
 This repository includes a full demo environment (mail, ERP, and RPA tool simulation),
 so the system can be tested end-to-end without external dependencies.
+
+The principle is: **UI interaction** is handled by the RPA tool. **Everything else (logic and orchestration)** is handled by this Python runtime.
 
 ---
 
