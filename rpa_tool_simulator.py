@@ -1,3 +1,8 @@
+# Place in main.py directory
+
+# Replace this file with your RPA Tool to do real screen automations, using below logic as a template 
+# (or using the workflow diagram on github)
+
 from __future__ import annotations
 
 import datetime
@@ -15,7 +20,7 @@ from openpyxl import load_workbook  # type: ignore
 
 class RPAToolSimulator:
     """
-    Simulates the external RPA tool.
+    Simulates the external RPA tool. Simulates only the architecture, not any actual screen activities. 
 
     Mental model:
     * Start this script = open the RPA tool
@@ -23,21 +28,28 @@ class RPAToolSimulator:
     * Press 2 = press STOP in the RPA tool
     """
 
+    # ignore init constructor when building real RPA Tool
     def __init__(self) -> None:
         self.last_command: str | None = None
 
+
     def run(self):
-        '''act as RPA_tool according to workflow diagram'''
         
-        self.log_system("RPAToolSimulator alive")
-        print("Button 1 and 2 represents the START/RUN and the STOP button in the RPA Tool.")
-
-        # input runs in separate thread
-        threading.Thread(target=self._command_loop, daemon=True).start()
-
+        # START and STOP button input runs in separate thread in this demo
+        threading.Thread(target=self._command_loop, daemon=True).start() # ignore building this in RPA Tool
+        
+        print(                                                            # simulation demo info 
+            "The RPA Tool application is now open, but the robot automation is not started.\n"
+            "Button 1 simulates the START/RUN button in the RPA Tool.\n"
+            "Button 2 simulates the STOP button.\n\n"
+            "Press 1 to start the robot.\n"
+            "Press 2 to stop it.\n\n"
+            "Use fake_jobs_generator.py to simulate incoming work."
+        )
+            
         while True:
-            print("[stopped] Press 1 to start the robot.")
-            self.wait_for_command("1")
+            self.wait_for_command("1") # ignore building this in RPA Tool
+
             # --------------------------------------------------
             # Cold start policy: reset handover.json on startup
             # --------------------------------------------------
@@ -49,7 +61,6 @@ class RPAToolSimulator:
             # Start main.py (RobotRuntime) async
             # --------------------------------------------------
             self.start_runtime_in_new_terminal()
-            print("[started] Press 2 to request stop.")
 
             # --------------------------------------------------
             #  Enter normal loop
@@ -59,12 +70,13 @@ class RPAToolSimulator:
                 if self.last_command == "2":
                     self.last_command = None
                     Path("stop.flag").write_text("", encoding="utf-8")
-                    self.log_system("stop.flag written by RPAToolSimulator")
+                    self.log_system("stop.flag written by RPAToolSimulator") # design decision, it's not necessary for RPA Tool to write a log
                     break
 
                 time.sleep(1)
 
                 try:
+                    
                     # read handover
                     with open("handover.json", "r", encoding="utf-8") as f:
                         handover_data = json.load(f)
@@ -72,16 +84,16 @@ class RPAToolSimulator:
                     state = handover_data.get("state")
                     if state != "job_queued":
                         continue
-                    
-                    time.sleep(1)
 
                     # claim workflow if "job_queued"
                     handover_data["state"] = "job_running"
                     with open("handover.json", "w", encoding="utf-8") as f:
                         json.dump(handover_data, f, indent=2)
 
+                    time.sleep(1)
+
                     # identify job
-                    job_type = handover_data.get("job_type")
+                    job_name = handover_data.get("job_name")
                     job_id = handover_data.get("job_id")
                     rpatool_payload = handover_data.get("rpatool_payload")
 
@@ -90,39 +102,41 @@ class RPAToolSimulator:
 
                     time.sleep(2)  # simulate processing time
 
-                    # JOB1
-                    if job_type == "job1":
+                    # qty_adjust
+                    if job_name == "qty_adjust":
                         # retrive job-specific data 
                         erp_order_number = rpatool_payload.get("order_number")
                         new_qty = rpatool_payload.get("target_order_qty")
 
-                        # simulation of job1 screenactiviy
+                        # demo simulation of screenactivity
                         self.log_system("activities on screen_1 in ERP completed", job_id)
                         self.log_system("activities on screen_2 in ERP completed", job_id)
                         
-                        # in this demo the job-specific data for job1 is not used
+                        # in this demo the job-specific data for qty_adjust is not used
                         del erp_order_number, new_qty
 
                         new_state = "job_verifying"
+
+                    # po_adjust
+                    elif job_name == "po_adjust":
+                        # placeholder for implementation
+
+                        new_state = "job_verifying"
                         
-                    # JOB3
-                    elif job_type == "job3":
+                    # order_adjust
+                    elif job_name == "order_adjust":
                         erp_order_number = rpatool_payload.get("source_ref")
                         new_qty = rpatool_payload.get("target_order_qty")
 
+                        # demo simulation of screenactivity
                         self.log_system("activities on screen_1 in ERP completed", job_id)
                         self.log_system("activities on screen_2 in ERP completed", job_id)
-                        self.simulate_rpa_result_job3(erp_order_number, new_qty)       
 
-                        new_state = "job_verifying"
-                    
-                    # JOB4
-                    elif job_type == "job4":
-                        # placeholder for implementation
+                        self.simulate_rpa_result_order_adjust(erp_order_number, new_qty)       
                         new_state = "job_verifying"
 
                     # PING
-                    elif job_type == "ping":
+                    elif job_name == "ping":
                         if platform.system() == "Windows":
                             import winsound
                             winsound.Beep(1000, 300)  # type: ignore
@@ -134,7 +148,7 @@ class RPAToolSimulator:
 
                     # UNKNOWN JOB
                     else:
-                        self.log_system(f"no logic for job_type={job_type}", job_id)
+                        self.log_system(f"no logic for job_name={job_name}", job_id)
                         new_state = "safestop"
 
                     # handover back to RobotRuntime
@@ -144,14 +158,11 @@ class RPAToolSimulator:
 
                     self.log_system(f"workflow completed, state job_running -> {new_state}", job_id)
 
+
                 except Exception as e:
-                    self.log_system(f"crash in loop: {e}")
+                    self.log_system(f"crash in RPA Tool loop: {e}")
 
-                    try:
-                        handover_data["state"] = "safestop"
-                    except Exception:
-                        handover_data = {"state": "safestop"}
-
+                    handover_data["state"] = "safestop"
                     with open("handover.json", "w", encoding="utf-8") as f:
                         json.dump(handover_data, f, indent=2)
         
@@ -160,6 +171,7 @@ class RPAToolSimulator:
         while self.last_command != expected:
             time.sleep(0.1)
         self.last_command = None
+
 
     def _command_loop(self):
         while True:
@@ -172,7 +184,7 @@ class RPAToolSimulator:
             except Exception as e:
                 print(f"Command loop error: {e}")
 
-    def simulate_rpa_result_job3(self, erp_order_number: str, new_qty: int, path="Example_ERP_table.xlsx"):
+    def simulate_rpa_result_order_adjust(self, erp_order_number: str, new_qty: int, path="Demo_ERP_table.xlsx"):
         assert erp_order_number is not None
         assert new_qty is not None
 
@@ -189,6 +201,7 @@ class RPAToolSimulator:
 
         wb.close()
         return False
+
 
     def start_runtime_in_new_terminal(self):
         python_exe = sys.executable
@@ -217,6 +230,7 @@ class RPAToolSimulator:
                 continue
 
         raise RuntimeError("No supported terminal emulator found")
+
 
     def log_system(self, event_text: str, job_id=None):
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
